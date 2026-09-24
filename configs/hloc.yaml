@@ -1,0 +1,34 @@
+hloc:
+  # Local features: a key of hloc.extract_features.confs.
+  # ALIKED (BSD-3) + LightGlue (Apache-2.0) are permissively licensed. SuperPoint
+  # and SuperGlue are not (Magic Leap weights are non-commercial only), and
+  # hloc's SuperPoint also needs a git submodule that pip does not install.
+  features: aliked-n16
+  # Deep-merged into the hloc conf. The values below are hloc's own defaults,
+  # listed so the knobs are visible. Not yet tuned on neonatal captures.
+  feature_overrides:
+    model:
+      # -1 keeps every keypoint above detection_threshold.
+      max_num_keypoints: -1
+      detection_threshold: 0.2
+    preprocessing:
+      # Longest image side fed to the extractor; keypoints are rescaled back to
+      # full resolution.
+      resize_max: 1024
+  # Matcher: a key of hloc.match_features.confs; must match the features.
+  matcher: aliked+lightglue
+  matcher_overrides: {}
+
+  pairs:
+    # Union of any of: sequential, retrieval, exhaustive (deduplicated).
+    strategies: [sequential, retrieval]
+    # Following frames paired with each frame (same as colmap.yaml overlap).
+    sequential_overlap: 5
+    # Global descriptor for retrieval: netvlad | megaloc | openibl | dir.
+    retrieval_model: netvlad
+    # Most similar images paired with each image. Adds long-range edges so the
+    # match graph survives a weak stretch of frames: the sequential-only split
+    # that forced colmap_exhaustive.yaml for SIFT.
+    retrieval_num_matched: 20
+
+# Incremental mapping uses colmap.yaml -> incremental_mapping for both backends.
