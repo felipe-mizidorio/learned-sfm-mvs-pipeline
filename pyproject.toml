@@ -8,7 +8,9 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pycolmap (>=4.0.3,<5.0.0)",
+    # CUDA build everywhere: wheels target all-major archs incl. sm_120 (RTX
+    # 5090) and still import on CPU-only machines.
+    "pycolmap-cuda12 (>=4.2.0,<5.0.0)",
     "open3d (>=0.19.0,<0.20.0)",
     "opencv-contrib-python (>=4.13.0.92,<5.0.0.0)",
     "numpy (>=2.4.4,<3.0.0)",
@@ -49,7 +51,13 @@ dev = [
 # hloc depends on opencv-python, which clashes with opencv-contrib-python (both
 # ship the cv2 module). The contrib build is a superset (ArUco), so drop the
 # plain one from resolution.
-override-dependencies = ["opencv-python ; sys_platform == 'never'"]
+#
+# hloc also depends on pycolmap (CPU); pycolmap-cuda12 ships the same module,
+# so drop the CPU one for the same reason.
+override-dependencies = [
+    "opencv-python ; sys_platform == 'never'",
+    "pycolmap ; sys_platform == 'never'",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }

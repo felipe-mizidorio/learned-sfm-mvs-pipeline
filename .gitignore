@@ -222,3 +222,5 @@ data/*
 !data/.gitkeep
 models/*
 !models/.gitkeep
+# Weight/uv cache bind-mounted into the container
+cache/

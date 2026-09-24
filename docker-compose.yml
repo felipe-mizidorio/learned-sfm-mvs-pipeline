@@ -1,0 +1,44 @@
+# HOST_UID/HOST_GID: set in .env to your `id -u` / `id -g` (see .env.example)
+# so outputs written to ./data are owned by you, not root.
+
+x-build: &build
+  context: .
+  dockerfile: docker/Dockerfile
+
+services:
+  pipeline:
+    build:
+      <<: *build
+      target: runtime
+      args:
+        VARIANT: gpu
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    image: learned-sfm-mvs:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # PyTorch DataLoader workers share tensors through /dev/shm.
+    shm_size: 16g
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      # Model weights (hloc/LightGlue/torch hub) and uv cache, kept across runs.
+      - ./cache:/cache
+
+  dev:
+    build:
+      <<: *build
+      target: dev
+      args:
+        VARIANT: cpu
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    image: learned-sfm-mvs:dev
+    volumes:
+      # Live source; the venv lives in /opt/venv so this does not hide it.
+      - .:/app
