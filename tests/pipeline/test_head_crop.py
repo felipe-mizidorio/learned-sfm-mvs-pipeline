@@ -176,7 +176,9 @@ def _write_cloud(points: np.ndarray, path: Path) -> None:
 def test_auto_head_radius_from_markers():
     rng = np.random.default_rng(0)
     markers = _make_marker_corner_points(rng)
-    radius, clamp_info = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    result = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    assert result is not None
+    radius, clamp_info = result
     # median corner distance (~0.65 units, corners stick out tangentially)
     # + 100 mm margin, within clamps.
     expected = (
@@ -194,7 +196,9 @@ def test_auto_head_radius_from_markers():
 
 def test_auto_head_radius_min_clamp():
     markers = np.tile(np.array([[0.05, 0.0, 0.0]]), (8, 1))
-    radius, clamp_info = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    result = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    assert result is not None
+    radius, clamp_info = result
     assert radius == pytest.approx(HEAD_CROP_MIN_RADIUS_MM / SCALE_MM_PER_UNIT)
     assert clamp_info["radius_clamped"] == "min"
     # offending (pre-clamp) value: 5 mm median distance + 100 mm margin
@@ -205,7 +209,9 @@ def test_auto_head_radius_min_clamp():
 
 def test_auto_head_radius_max_clamp():
     markers = np.tile(np.array([[3.0, 0.0, 0.0]]), (8, 1))
-    radius, clamp_info = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    result = auto_head_radius(HEAD_CENTER, markers, SCALE_MM_PER_UNIT)
+    assert result is not None
+    radius, clamp_info = result
     assert radius == pytest.approx(HEAD_CROP_MAX_RADIUS_MM / SCALE_MM_PER_UNIT)
     assert clamp_info["radius_clamped"] == "max"
     assert clamp_info["radius_unclamped_mm"] == pytest.approx(

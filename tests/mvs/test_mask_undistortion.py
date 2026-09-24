@@ -9,6 +9,7 @@ from learned_sfm_mvs.mvs.mask_undistortion import (
 )
 from learned_sfm_mvs.pipeline.orchestration import with_fusion_mask_provenance
 
+
 def _camera(model_name: str, width: int, height: int, params: list[float]) -> MagicMock:
     camera = MagicMock()
     camera.model.name = model_name
