@@ -1,5 +1,6 @@
 """Tests for reproducibility fields in pipeline_manifest.json (A2)."""
 
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -69,3 +70,19 @@ def test_write_pipeline_manifest_backward_compatible(tmp_path: Path):
     assert data["run_script"] == "sfm-mvs-resume-dense"
     assert data["scale_factor_mm_per_unit"] is None
     assert "scale_sanity_check" not in data
+
+
+def test_manifest_timestamp_is_valid_utc_iso8601(tmp_path: Path):
+    write_pipeline_manifest(
+        tmp_path, "sfm-mvs-run", SOR_STATS, LCC_STATS, MESH_OPTS, None
+    )
+
+    stamp = json.loads((tmp_path / "pipeline_manifest.json").read_text())[
+        "timestamp_utc"
+    ]
+    # One zone designator only: "+00:00Z" is not ISO 8601 and strict parsers
+    # reject it.
+    assert stamp.endswith("Z")
+    assert "+00:00" not in stamp
+    parsed = datetime.datetime.fromisoformat(stamp)
+    assert parsed.utcoffset() == datetime.timedelta(0)
