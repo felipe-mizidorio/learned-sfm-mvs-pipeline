@@ -1,0 +1,35 @@
+poisson_surface_reconstruction:
+  # Octree depth controlling mesh resolution; higher = finer detail but slower
+  depth: 9
+  # Scale factor applied to the bounding box before reconstruction; enlarging avoids boundary artifacts
+  scale: 1.1
+  # Whether to solve the linear system with a conjugate-gradient solver (True) or direct solver (False)
+  linear_fit: false
+  # Vertices below this quantile of the Poisson density array are removed (reduces floating geometry).
+  # Keep at 0.01: this is a GLOBAL quantile, so raising it shaves the whole surface uniformly
+  # (0.01 -> 0.05 costs 15.6% of pale and 15.1% of genuine dark area) and never reaches the pale
+  # membrane, whose vertices sit at healthy density. See docs/mesh_quality_report.md.
+  density_threshold: 0.01
+  # Keep only the largest connected component after Poisson reconstruction (removes background noise)
+  keep_largest_component: true
+  # Taubin smoothing applied after LCC — removes high-frequency wrinkles from MVS noise.
+  # DISABLED (iterations: 0). Set iterations > 0 to re-enable; lambda/mu below are the
+  # tuned values and 5 is the measured knee (91% of the available roughness reduction
+  # at 46% less vertex displacement than 10).
+  #
+  # Disabled deliberately, not because it is harmful: Taubin is radially unbiased here
+  # (mean inward movement +0.0001 mm), so the shrinkage objection does not apply. But
+  # the total reduction it can offer is only ~10%, against a roughness now attributed
+  # to marker-border relief and thin frame coverage — capture protocol, not geometry
+  # processing. Shipping no smoothing means the mesh carries no displacement argument
+  # into the morphometry work. See docs/mesh_quality_report.md.
+  taubin_smoothing:
+    iterations: 0
+    lambda_filter: 0.5
+    mu: -0.53
+
+point_cloud_filtering:
+  # neighbourhood size for mean distance computation
+  nb_neighbors: 20
+  # remove points whose mean neighbour distance exceeds mean + std_ratio * std_dev
+  std_ratio: 2.0

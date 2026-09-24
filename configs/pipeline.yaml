@@ -1,0 +1,5 @@
+pipeline:
+  # Structure-from-Motion backend: "hloc" (SuperPoint + LightGlue) | "colmap_sift"
+  sfm_backend: hloc
+  # Multi-View Stereo backend: "transmvsnet" | "patchmatch" (COLMAP)
+  mvs_backend: transmvsnet
