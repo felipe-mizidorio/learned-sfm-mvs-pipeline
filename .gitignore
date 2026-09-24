@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pipeline data and model weights (mounted into the container, never committed)
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
