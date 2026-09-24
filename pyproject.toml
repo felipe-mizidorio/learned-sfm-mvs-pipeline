@@ -1,0 +1,70 @@
+[project]
+name = "learned-sfm-mvs-pipeline"
+version = "0.1.0"
+description = "SfM + MVS pipeline with learned backends (hloc, TransMVSNet) alongside classic COLMAP"
+authors = [
+    {name = "Felipe Merenda Izidorio", email = "felipeizidorio@ipb.pt"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pycolmap (>=4.0.3,<5.0.0)",
+    "open3d (>=0.19.0,<0.20.0)",
+    "opencv-contrib-python (>=4.13.0.92,<5.0.0.0)",
+    "numpy (>=2.4.4,<3.0.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "h5py (>=3.12.0,<4.0.0)",
+]
+
+[project.scripts]
+sfm-mvs-run = "learned_sfm_mvs.cli.run:main"
+sfm-mvs-resume-mvs = "learned_sfm_mvs.cli.resume_mvs:main"
+sfm-mvs-resume-dense = "learned_sfm_mvs.cli.resume_dense:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/learned_sfm_mvs"]
+
+[dependency-groups]
+# Learned backends. Torch comes from the cu128 index: RTX 5090 (sm_120) needs
+# CUDA >= 12.8 and torch >= 2.7.
+learned = [
+    "torch (>=2.7.0)",
+    "torchvision (>=0.22.0)",
+    "kornia (>=0.7.0)",
+    "hloc",
+    "lightglue",
+]
+dev = [
+    "ruff (>=0.15.12,<0.16.0)",
+    "pyright (>=1.1.409,<2.0.0)",
+    "pytest (>=9.0.3,<10.0.0)",
+    "pre-commit (>=4.0.0,<5.0.0)",
+]
+
+[tool.uv]
+# hloc depends on opencv-python, which clashes with opencv-contrib-python (both
+# ship the cv2 module). The contrib build is a superset (ArUco), so drop the
+# plain one from resolution.
+override-dependencies = ["opencv-python ; sys_platform == 'never'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+# Pinned: hloc tracks pycolmap API changes closely (see Phase 1 spike).
+hloc = { git = "https://github.com/cvg/Hierarchical-Localization", rev = "c13273bd0ecc2917a35910fd843712a1c6243193" }
+lightglue = { git = "https://github.com/cvg/LightGlue", rev = "eb42fee2d71449efb0aa5c10549752b5d75384d8" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: needs a CUDA device (run inside the GPU container)",
+]
