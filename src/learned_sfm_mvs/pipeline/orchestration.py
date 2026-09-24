@@ -654,7 +654,11 @@ def write_pipeline_manifest(
     """
     manifest = {
         "run_script": run_script,
-        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        # isoformat() of an aware UTC datetime already ends in "+00:00"; swap it
+        # for "Z" rather than appending, which would give two zone designators.
+        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
         **sor_stats,
         "poisson_surface_reconstruction": {
             "depth": mesh_opts["depth"],
