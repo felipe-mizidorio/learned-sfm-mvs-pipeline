@@ -30,18 +30,25 @@ def check_marker_layout(
 ) -> dict | None:
     """Compare triangulated inter-marker distances against the known layout.
 
-    Args:
-        corners_by_marker: {marker_id: {corner_index: xyz}} in SfM units, as
-            returned by triangulate_marker_corners.
-        scale_factor: Recovered mm/SfM-unit factor; None disables the check.
-        layout_cfg: The `layout_check` block from aruco.yaml. Expected shape:
-            {"known_distances_mm": [{"ids": [a, b], "distance_mm": d}, ...],
-             "warn_tolerance_pct": 5.0}
+    Parameters
+    ----------
+    corners_by_marker : dict[int, dict[int, np.ndarray]]
+        ``{marker_id: {corner_index: xyz}}`` in SfM units, as returned by
+        ``triangulate_marker_corners``.
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor; None disables the check.
+    layout_cfg : dict or None
+        The ``layout_check`` block from aruco.yaml. Expected shape:
+        ``{"known_distances_mm": [{"ids": [a, b], "distance_mm": d}, ...],
+        "warn_tolerance_pct": 5.0}``.
 
-    Returns:
+    Returns
+    -------
+    dict or None
         A manifest-ready dict with per-pair results and an aggregate status
-        ("passed" | "warning" | "insufficient_markers"), or None when the
-        check is disabled (no layout configured, or no scale recovered).
+        (``"passed"`` | ``"warning"`` | ``"insufficient_markers"``), or None
+        when the check is disabled (no layout configured, or no scale
+        recovered).
     """
     if not layout_cfg or not layout_cfg.get("known_distances_mm"):
         logger.debug("Scale sanity check skipped: no marker layout configured.")

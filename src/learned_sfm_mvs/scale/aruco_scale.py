@@ -29,19 +29,27 @@ def triangulate_marker_corners(
 ) -> dict[int, dict[int, np.ndarray]]:
     """Triangulate ArUco marker corners into reconstruction (SfM-unit) space.
 
-    Args:
-        reconstruction: Completed sparse reconstruction from incremental mapping.
-        image_dir: Directory containing the registered images (supports subdirs).
-        aruco_dict_id: OpenCV ArUco dictionary ID (default DICT_4X4_50).
-        detections: Pre-computed detections from the preprocessing manifest.
-            Format: {image_name: [{"id": int, "corners": [[x,y],…]×4}, …]}.
-            If provided, images are not re-read from disk.
-        min_views: Minimum number of views required to triangulate a marker corner.
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        Completed sparse reconstruction from incremental mapping.
+    image_dir : Path
+        Directory containing the registered images (supports subdirs).
+    aruco_dict_id : int, optional
+        OpenCV ArUco dictionary ID (default ``DICT_4X4_50``).
+    detections : dict[str, list[dict]] or None, optional
+        Pre-computed detections from the preprocessing manifest, as
+        ``{image_name: [{"id": int, "corners": [[x, y], ...] x 4}, ...]}``.
+        If provided, images are not re-read from disk.
+    min_views : int, optional
+        Minimum number of views required to triangulate a marker corner.
 
-    Returns:
-        {marker_id: {corner_index: xyz}} with one mean 3D position per
+    Returns
+    -------
+    dict[int, dict[int, np.ndarray]]
+        ``{marker_id: {corner_index: xyz}}`` with one mean 3D position per
         successfully triangulated corner. Markers observed in fewer than
-        min_views images, or with no triangulable corner, are omitted.
+        ``min_views`` images, or with no triangulable corner, are omitted.
     """
     aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_id)
     detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
@@ -123,7 +131,18 @@ def triangulate_marker_corners(
 def marker_corner_points(
     corners_by_marker: dict[int, dict[int, np.ndarray]],
 ) -> np.ndarray:
-    """Flatten triangulated corners into an (N, 3) array of SfM-unit points."""
+    """Flatten triangulated corners into an (N, 3) array of SfM-unit points.
+
+    Parameters
+    ----------
+    corners_by_marker : dict[int, dict[int, np.ndarray]]
+        Output of ``triangulate_marker_corners``.
+
+    Returns
+    -------
+    np.ndarray
+        ``(N, 3)`` corner positions; ``(0, 3)`` when there are none.
+    """
     pts = [p for corners in corners_by_marker.values() for p in corners.values()]
     return np.array(pts) if pts else np.empty((0, 3))
 
@@ -185,13 +204,22 @@ def recover_scale(
 ) -> float:
     """Return a scale factor (mm / reconstruction-unit) derived from ArUco markers.
 
-    See triangulate_marker_corners for argument semantics.
+    Parameters
+    ----------
+    reconstruction, image_dir, aruco_dict_id, detections, min_views
+        See ``triangulate_marker_corners``.
+    marker_length_mm : float
+        Physical marker side length in millimetres.
 
-    Returns:
+    Returns
+    -------
+    float
         Median scale factor across all triangulated markers.
 
-    Raises:
-        RuntimeError: If no markers can be triangulated from the reconstruction.
+    Raises
+    ------
+    RuntimeError
+        If no markers can be triangulated from the reconstruction.
     """
     corners_by_marker = triangulate_marker_corners(
         reconstruction=reconstruction,
@@ -213,14 +241,35 @@ def recover_scale_details_safe(
 ) -> tuple[float | None, np.ndarray | None, dict[int, dict[int, np.ndarray]] | None]:
     """Recover scale, flattened corner points, and per-marker corners; never raises.
 
-    Returns (scale_factor, marker_points, corners_by_marker):
-    - marker_points is an (N, 3) array of triangulated ArUco corner positions
-      in SfM units — the input for automatic head-crop sizing.
-    - corners_by_marker is {marker_id: {corner_index: xyz}} — the input for
-      the independent layout-based scale sanity check.
-    All are None if marker_length_mm is falsy (scale recovery disabled) or if
-    recovery fails (logged as a warning): without a valid scale the marker
-    positions cannot size a metric crop.
+    All outputs are None if ``marker_length_mm`` is falsy (scale recovery
+    disabled) or if recovery fails (logged as a warning): without a valid scale
+    the marker positions cannot size a metric crop.
+
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        Completed sparse reconstruction.
+    image_dir : Path
+        Directory containing the registered images.
+    marker_length_mm : float or None
+        Physical marker side length; falsy disables scale recovery.
+    aruco_dict_id : int
+        OpenCV ArUco dictionary ID.
+    detections : dict or None
+        Pre-computed detections, see ``triangulate_marker_corners``.
+    min_views : int
+        Minimum number of views required to triangulate a marker corner.
+
+    Returns
+    -------
+    scale_factor : float or None
+        Median mm/SfM-unit factor.
+    marker_points : np.ndarray or None
+        ``(N, 3)`` triangulated ArUco corner positions in SfM units — the input
+        for automatic head-crop sizing.
+    corners_by_marker : dict[int, dict[int, np.ndarray]] or None
+        ``{marker_id: {corner_index: xyz}}`` — the input for the independent
+        layout-based scale sanity check.
     """
     if not marker_length_mm:
         return None, None, None
@@ -255,7 +304,30 @@ def recover_scale_and_markers_safe(
     detections: dict[str, list[dict]] | None,
     min_views: int,
 ) -> tuple[float | None, np.ndarray | None]:
-    """recover_scale_details_safe for callers that don't need per-marker corners."""
+    """``recover_scale_details_safe`` for callers that don't need per-marker corners.
+
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        Completed sparse reconstruction.
+    image_dir : Path
+        Directory containing the registered images.
+    marker_length_mm : float or None
+        Physical marker side length; falsy disables scale recovery.
+    aruco_dict_id : int
+        OpenCV ArUco dictionary ID.
+    detections : dict or None
+        Pre-computed detections, see ``triangulate_marker_corners``.
+    min_views : int
+        Minimum number of views required to triangulate a marker corner.
+
+    Returns
+    -------
+    scale_factor : float or None
+        Median mm/SfM-unit factor.
+    marker_points : np.ndarray or None
+        ``(N, 3)`` triangulated corner positions in SfM units.
+    """
     scale_factor, marker_points, _ = recover_scale_details_safe(
         reconstruction=reconstruction,
         image_dir=image_dir,
@@ -275,7 +347,28 @@ def recover_scale_safe(
     detections: dict[str, list[dict]] | None,
     min_views: int,
 ) -> float | None:
-    """recover_scale_and_markers_safe for callers that only need the factor."""
+    """``recover_scale_and_markers_safe`` for callers that only need the factor.
+
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        Completed sparse reconstruction.
+    image_dir : Path
+        Directory containing the registered images.
+    marker_length_mm : float or None
+        Physical marker side length; falsy disables scale recovery.
+    aruco_dict_id : int
+        OpenCV ArUco dictionary ID.
+    detections : dict or None
+        Pre-computed detections, see ``triangulate_marker_corners``.
+    min_views : int
+        Minimum number of views required to triangulate a marker corner.
+
+    Returns
+    -------
+    float or None
+        Median mm/SfM-unit factor, or None if disabled or failed.
+    """
     scale_factor, _ = recover_scale_and_markers_safe(
         reconstruction=reconstruction,
         image_dir=image_dir,
@@ -288,7 +381,15 @@ def recover_scale_safe(
 
 
 def apply_scale_to_ply(ply_path: Path, scale: float) -> None:
-    """Multiply all XYZ coordinates in a point-cloud PLY by scale in-place."""
+    """Multiply all XYZ coordinates in a point-cloud PLY by scale in-place.
+
+    Parameters
+    ----------
+    ply_path : Path
+        Point cloud to rewrite.
+    scale : float
+        Multiplicative factor (mm per SfM unit).
+    """
     pcd = o3d.io.read_point_cloud(str(ply_path))
     pcd.points = o3d.utility.Vector3dVector(np.asarray(pcd.points) * scale)
     o3d.io.write_point_cloud(str(ply_path), pcd)
@@ -296,7 +397,15 @@ def apply_scale_to_ply(ply_path: Path, scale: float) -> None:
 
 
 def apply_scale_to_mesh(ply_path: Path, scale: float) -> None:
-    """Multiply all vertex coordinates in a mesh PLY by scale in-place."""
+    """Multiply all vertex coordinates in a mesh PLY by scale in-place.
+
+    Parameters
+    ----------
+    ply_path : Path
+        Mesh to rewrite.
+    scale : float
+        Multiplicative factor (mm per SfM unit).
+    """
     mesh = o3d.io.read_triangle_mesh(str(ply_path))
     mesh.vertices = o3d.utility.Vector3dVector(np.asarray(mesh.vertices) * scale)
     o3d.io.write_triangle_mesh(str(ply_path), mesh)

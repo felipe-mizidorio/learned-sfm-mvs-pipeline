@@ -49,14 +49,20 @@ def resolve_scale_status(
 ) -> dict:
     """Classify the metric-scale state of a run for the manifest.
 
-    Args:
-        scale_factor: Recovered mm/SfM-unit factor, or None if recovery failed.
-        scale_sanity: The `check_marker_layout` result, or None when the check
-            did not run (no `known_distances_mm` configured, or no scale).
+    Parameters
+    ----------
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor, or None if recovery failed.
+    scale_sanity : dict or None
+        The ``check_marker_layout`` result, or None when the check did not run
+        (no ``known_distances_mm`` configured, or no scale).
 
-    Returns:
-        A manifest-ready dict with an explicit `status`, the coordinate `units`
-        the artefacts are actually in, and a human-readable `detail`.
+    Returns
+    -------
+    dict
+        A manifest-ready dict with an explicit ``status``, the coordinate
+        ``units`` the artefacts are actually in, and a human-readable
+        ``detail``.
     """
     if scale_factor is None:
         return {
@@ -117,14 +123,17 @@ def enforce_scale_policy(scale_status: dict, allow_unscaled: bool) -> None:
     to the cap. Gating on it would block all current work while doing nothing
     about the silent path this guard exists to close.
 
-    Args:
-        scale_status: The result of `resolve_scale_status`.
-        allow_unscaled: True when the operator explicitly opted in to
-            non-metric output.
+    Parameters
+    ----------
+    scale_status : dict
+        The result of ``resolve_scale_status``.
+    allow_unscaled : bool
+        True when the operator explicitly opted in to non-metric output.
 
-    Raises:
-        UnscaledOutputError: If the scale factor is absent and the operator did
-            not opt in.
+    Raises
+    ------
+    UnscaledOutputError
+        If the scale factor is absent and the operator did not opt in.
     """
     if scale_status["status"] != STATUS_UNSCALED:
         return
@@ -156,6 +165,16 @@ def unscaled_artifact_path(path: Path) -> Path:
     `out/mesh.ply` becomes `out/mesh.UNSCALED_sfm_units.ply`. The marker rides
     in the filename rather than a sidecar so that it survives the file being
     copied or moved somewhere else. Idempotent, so re-marking is safe.
+
+    Parameters
+    ----------
+    path : Path
+        Artefact path.
+
+    Returns
+    -------
+    Path
+        Path with ``UNSCALED_sfm_units`` inserted before the suffix.
     """
     if UNSCALED_MARKER in path.name:
         return path

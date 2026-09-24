@@ -14,6 +14,35 @@ def filter_point_cloud(
     nb_neighbors: int,
     std_ratio: float,
 ) -> o3d.geometry.PointCloud:
+    """Statistical outlier removal (SOR).
+
+    Removes points whose mean distance to their ``nb_neighbors`` nearest
+    neighbours exceeds the global mean by more than ``std_ratio`` standard
+    deviations.
+
+    Parameters
+    ----------
+    input_ply : Path
+        Input point cloud.
+    output_ply : Path
+        Where the filtered cloud is written.
+    nb_neighbors : int
+        Neighbourhood size for the mean-distance computation.
+    std_ratio : float
+        Rejection threshold in standard deviations.
+
+    Returns
+    -------
+    o3d.geometry.PointCloud
+        The filtered cloud (also written to ``output_ply``).
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``input_ply`` does not exist.
+    ValueError
+        If the input cloud is empty.
+    """
     if not input_ply.exists():
         raise FileNotFoundError(f"Input point cloud not found: {input_ply}")
 

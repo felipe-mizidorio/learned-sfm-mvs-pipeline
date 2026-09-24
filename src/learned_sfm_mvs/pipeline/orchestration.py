@@ -59,9 +59,21 @@ HEAD_CROP_MIN_MARKER_CORNERS = 8
 def estimate_head_center(reconstruction: pycolmap.Reconstruction) -> np.ndarray:
     """Least-squares intersection of camera optical axes → approximate head center.
 
-    Raises:
-        np.linalg.LinAlgError: If poses do not constrain a unique intersection
-            (e.g. no posed images, or all optical axes parallel).
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        Sparse model with posed images.
+
+    Returns
+    -------
+    np.ndarray
+        ``(3,)`` point in SfM units.
+
+    Raises
+    ------
+    np.linalg.LinAlgError
+        If poses do not constrain a unique intersection (e.g. no posed images,
+        or all optical axes parallel).
     """
     A = np.zeros((3, 3))
     b = np.zeros(3)
@@ -83,6 +95,22 @@ def estimate_head_center(reconstruction: pycolmap.Reconstruction) -> np.ndarray:
 def crop_to_sphere(
     pcd: o3d.geometry.PointCloud, center: np.ndarray, radius: float
 ) -> o3d.geometry.PointCloud:
+    """Keep only the points within ``radius`` of ``center``.
+
+    Parameters
+    ----------
+    pcd : o3d.geometry.PointCloud
+        Input cloud.
+    center : np.ndarray
+        ``(3,)`` sphere centre, in the cloud's units.
+    radius : float
+        Sphere radius, in the cloud's units.
+
+    Returns
+    -------
+    o3d.geometry.PointCloud
+        New cloud with the points inside the sphere.
+    """
     pts = np.asarray(pcd.points)
     dists = np.linalg.norm(pts - center, axis=1)
     mask = dists <= radius
@@ -109,11 +137,23 @@ def auto_head_radius(
     scale factor or marker positions are unavailable — callers fall back to
     DEFAULT_HEAD_RADIUS_SFM.
 
-    Returns:
-        (radius, clamp_info) where clamp_info records whether the clamp fired
-        ("min" | "max" | False) and the pre-clamp value in millimetres. With a
-        well-placed centre the clamp should never fire, so tripping it is a
-        sentinel for an upstream problem (bad triangulations or wrong scale).
+    Parameters
+    ----------
+    center : np.ndarray
+        ``(3,)`` crop centre in SfM units.
+    marker_points : np.ndarray or None
+        ``(N, 3)`` triangulated marker corners in SfM units.
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor.
+
+    Returns
+    -------
+    tuple[float, dict] or None
+        ``(radius, clamp_info)`` where ``clamp_info`` records whether the clamp
+        fired (``"min"`` | ``"max"`` | False) and the pre-clamp value in
+        millimetres. With a well-placed centre the clamp should never fire, so
+        tripping it is a sentinel for an upstream problem (bad triangulations
+        or wrong scale). None when scale or markers are unavailable.
     """
     if scale_factor is None or marker_points is None or len(marker_points) == 0:
         return None
@@ -170,10 +210,28 @@ def run_head_crop(
     markers > DEFAULT_HEAD_RADIUS_SFM fallback. An override of 0 (or negative)
     disables the crop entirely.
 
-    Returns:
-        (input_for_poisson, crop_stats): the PLY the mesh stage should consume
-        (the cropped file, or dense_filtered_ply when the crop is skipped or
-        removes every point) and stats for pipeline_manifest.json.
+    Parameters
+    ----------
+    dense_filtered_ply : Path
+        SOR-filtered dense cloud, in SfM units.
+    output_dir : Path
+        Run output directory; the cropped cloud is written here.
+    reconstruction : pycolmap.Reconstruction
+        Sparse model, for the optical-axis centre fallback.
+    head_radius_override : float or None
+        Debug radius override in SfM units; ``<= 0`` disables the crop.
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor.
+    marker_points : np.ndarray or None
+        ``(N, 3)`` triangulated marker corners in SfM units.
+
+    Returns
+    -------
+    input_for_poisson : Path
+        The PLY the mesh stage should consume: the cropped file, or
+        ``dense_filtered_ply`` when the crop is skipped or removes every point.
+    crop_stats : dict
+        Stats for pipeline_manifest.json.
     """
     if head_radius_override is not None and head_radius_override <= 0:
         logger.info("Head crop disabled (--head-radius %s).", head_radius_override)
@@ -262,9 +320,21 @@ def run_sor(
 ) -> tuple[Path, dict]:
     """Run SOR on input_ply, save filtered PLY to output_dir.
 
-    Returns:
-        (dense_filtered_ply, sor_stats) where sor_stats contains point counts
-        for inclusion in pipeline_manifest.json.
+    Parameters
+    ----------
+    input_ply : Path
+        Dense cloud.
+    output_dir : Path
+        Run output directory; ``dense_filtered.ply`` is written here.
+    filter_opts : dict
+        ``point_cloud_filtering`` section of ``configs/mesh.yaml``.
+
+    Returns
+    -------
+    dense_filtered_ply : Path
+        The filtered cloud.
+    sor_stats : dict
+        Point counts for inclusion in pipeline_manifest.json.
     """
     pcd_raw = o3d.io.read_point_cloud(str(input_ply))
 
@@ -300,9 +370,23 @@ def run_poisson_lcc(
     to output_dir so each stage can be inspected in a 3D viewer; the final
     Taubin-smoothed mesh is written to output_ply.
 
-    Returns:
-        (final_mesh, lcc_stats) where lcc_stats contains triangle counts
-        for inclusion in pipeline_manifest.json.
+    Parameters
+    ----------
+    input_ply : Path
+        Point cloud to mesh.
+    output_ply : Path
+        Where the final mesh is written.
+    output_dir : Path
+        Run output directory for the intermediate meshes.
+    mesh_opts : dict
+        ``poisson_surface_reconstruction`` section of ``configs/mesh.yaml``.
+
+    Returns
+    -------
+    final_mesh : o3d.geometry.TriangleMesh
+        The final mesh.
+    lcc_stats : dict
+        Triangle counts for inclusion in pipeline_manifest.json.
     """
     pcd = o3d.io.read_point_cloud(str(input_ply))
     if len(pcd.points) == 0:
@@ -352,6 +436,18 @@ def build_provenance(
     Records the library versions, the SHA-256 of the input frames manifest
     (None when the run had no manifest), the fully-resolved config values the
     run actually used, and the known non-determinism sources.
+
+    Parameters
+    ----------
+    frames_manifest : Path or None
+        Input frames manifest, if the run had one.
+    resolved_configs : dict
+        Config values the run actually used, keyed by config name.
+
+    Returns
+    -------
+    dict
+        Provenance block, merged into the manifest top level.
     """
     manifest_sha256 = None
     if frames_manifest is not None and Path(frames_manifest).exists():
@@ -382,6 +478,24 @@ def with_fusion_mask_provenance(
     Always writes the ``fusion_masks`` block, including ``enabled: false``. A run
     that simply omits the key is indistinguishable from one produced before
     fusion masking existed, which makes past clouds unattributable.
+
+    Parameters
+    ----------
+    provenance : dict
+        Provenance block to update in place.
+    enabled : bool
+        Whether fusion was mask-restricted.
+    source_mask_dir : Path or None, optional
+        Original-frame mask directory.
+    workspace_mask_dir : Path or None, optional
+        Warped masks in the MVS workspace.
+    stats : dict or None, optional
+        Warp statistics from ``undistort_masks_safe``.
+
+    Returns
+    -------
+    dict
+        ``provenance``, for chaining.
     """
     block: dict = {"enabled": enabled}
     if enabled:
@@ -403,6 +517,20 @@ def with_membrane_filter_provenance(
     for the same reason as the fusion-mask block: a run that omits the key is
     indistinguishable from one produced before the filter existed, which makes
     past meshes unattributable.
+
+    Parameters
+    ----------
+    provenance : dict
+        Provenance block to update in place.
+    enabled : bool
+        Whether the membrane filter was requested.
+    stats : dict or None, optional
+        Stats from ``run_membrane_filter``.
+
+    Returns
+    -------
+    dict
+        ``provenance``, for chaining.
     """
     block: dict = {"enabled": enabled}
     if enabled:
@@ -426,9 +554,27 @@ def run_membrane_filter(
     factor the conversion is impossible and the filter is skipped rather than
     guessed at.
 
-    Returns:
-        (input_for_poisson, stats) — the filtered PLY when the filter ran, the
-        untouched input otherwise.
+    Parameters
+    ----------
+    input_ply : Path
+        Cropped cloud, in SfM units.
+    output_dir : Path
+        Run output directory; the filtered cloud is written here.
+    marker_corners : dict or None
+        Triangulated marker corners in SfM units.
+    pale_threshold : float
+        Mean RGB (0-255) at or above which a point is pale.
+    marker_margin_mm : float
+        Protection margin in millimetres.
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor; None skips the filter.
+
+    Returns
+    -------
+    input_for_poisson : Path
+        The filtered PLY when the filter ran, the untouched input otherwise.
+    stats : dict
+        Manifest-ready filter stats.
     """
     if not marker_corners:
         logger.warning(
@@ -481,7 +627,31 @@ def write_pipeline_manifest(
     scale_status: dict | None = None,
     provenance: dict | None = None,
 ) -> None:
-    """Write pipeline_manifest.json to output_dir."""
+    """Write pipeline_manifest.json to output_dir.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Run output directory.
+    run_script : str
+        Entry point that produced the run (e.g. ``sfm-mvs-run``).
+    sor_stats : dict
+        Point counts from SOR, crop and filters.
+    lcc_stats : dict
+        Triangle counts from Poisson/LCC.
+    mesh_opts : dict
+        ``poisson_surface_reconstruction`` config used.
+    scale_factor : float or None
+        Recovered mm/SfM-unit factor.
+    scale_sanity : dict or None, optional
+        ``check_marker_layout`` result.
+    scale_self_consistency : dict or None, optional
+        ``check_scale_self_consistency`` result.
+    scale_status : dict or None, optional
+        ``resolve_scale_status`` result.
+    provenance : dict or None, optional
+        Reproducibility block, merged into the top level.
+    """
     manifest = {
         "run_script": run_script,
         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",

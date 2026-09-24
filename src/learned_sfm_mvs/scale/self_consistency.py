@@ -73,17 +73,22 @@ def check_scale_self_consistency(
 ) -> dict | None:
     """Compute both self-consistency metrics from triangulated corners.
 
-    Args:
-        corners_by_marker: {marker_id: {corner_index: xyz}} in SfM units, as
-            returned by triangulate_marker_corners.
-        marker_length_mm: Physical marker side length; falsy disables the
-            check (scale recovery itself is disabled in that case).
+    Parameters
+    ----------
+    corners_by_marker : dict[int, dict[int, np.ndarray]]
+        ``{marker_id: {corner_index: xyz}}`` in SfM units, as returned by
+        ``triangulate_marker_corners``.
+    marker_length_mm : float or None
+        Physical marker side length; falsy disables the check (scale recovery
+        itself is disabled in that case).
 
-    Returns:
-        A manifest-ready dict (pure JSON types) with per_marker_scale and
-        diagonal_ratio blocks, or None when disabled. Markers without all
+    Returns
+    -------
+    dict or None
+        A manifest-ready dict (pure JSON types) with ``per_marker_scale`` and
+        ``diagonal_ratio`` blocks, or None when disabled. Markers without all
         four corners, or with degenerate (near-zero) sides or diagonals, are
-        skipped and counted in n_skipped. Never raises on marker geometry.
+        skipped and counted in ``n_skipped``. Never raises on marker geometry.
     """
     if not marker_length_mm:
         return None

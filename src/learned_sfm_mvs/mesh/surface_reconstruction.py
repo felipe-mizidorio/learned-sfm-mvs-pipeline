@@ -111,6 +111,29 @@ def reconstruct_surface(
     output_ply: Path,
     options: dict,
 ) -> o3d.geometry.TriangleMesh:
+    """Poisson reconstruction, density trim, LCC filter and optional Taubin smoothing.
+
+    Parameters
+    ----------
+    input_ply : Path
+        Input point cloud. Normals are estimated when missing.
+    output_ply : Path
+        Where the final mesh is written.
+    options : dict
+        ``poisson_surface_reconstruction`` section of ``configs/mesh.yaml``.
+
+    Returns
+    -------
+    o3d.geometry.TriangleMesh
+        The final mesh (also written to ``output_ply``).
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``input_ply`` does not exist.
+    ValueError
+        If the input cloud is empty.
+    """
     if not input_ply.exists():
         raise FileNotFoundError(f"Input point cloud not found: {input_ply}")
 

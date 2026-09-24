@@ -65,6 +65,23 @@ def undistortion_maps(
     For every pixel of the undistorted image: normalize through the (pinhole)
     undistorted intrinsics, apply the original model's radial distortion, then
     project through the original intrinsics. Suitable for ``cv2.remap``.
+
+    Parameters
+    ----------
+    original_camera : pycolmap.Camera
+        Camera of the original (distorted) frames.
+    undistorted_camera : pycolmap.Camera
+        Distortion-free camera of the MVS workspace.
+
+    Returns
+    -------
+    map_x, map_y : np.ndarray
+        ``float32`` arrays of shape ``(height, width)`` of the undistorted image.
+
+    Raises
+    ------
+    ValueError
+        If either model is unsupported or the undistorted camera has distortion.
     """
     fx_u, fy_u, cx_u, cy_u, ks_u = _unpack_intrinsics(undistorted_camera)
     if ks_u and any(k != 0.0 for k in ks_u):
@@ -101,6 +118,19 @@ def undistort_masks_safe(
     warn-don't-abort convention (see scale/layout_check.py): the failure is
     logged prominently and returned as ``None`` so the caller records
     ``fusion_masks.enabled = false`` with the reason.
+
+    Parameters
+    ----------
+    mask_path, original_sparse_path, mvs_path, output_dir_name
+        See ``undistort_masks``.
+
+    Returns
+    -------
+    out_dir : Path or None
+        Directory of warped masks, or ``None`` on failure.
+    stats : dict or None
+        Warp statistics, or ``{"enabled_requested": True, "failure": ...}`` on
+        failure.
     """
     try:
         return undistort_masks(
@@ -123,13 +153,28 @@ def undistort_masks(
 ) -> tuple[Path, dict]:
     """Warp all masks for registered images into the MVS workspace.
 
-    Args:
-        mask_path: Directory of original-frame masks (COLMAP ``<name>.png``).
-        original_sparse_path: Sparse model with the ORIGINAL (distorted) cameras.
-        mvs_path: MVS workspace (contains ``sparse/`` with undistorted cameras).
+    Parameters
+    ----------
+    mask_path : Path
+        Directory of original-frame masks (COLMAP ``<name>.png``).
+    original_sparse_path : Path
+        Sparse model with the ORIGINAL (distorted) cameras.
+    mvs_path : Path
+        MVS workspace (contains ``sparse/`` with undistorted cameras).
+    output_dir_name : str, optional
+        Subdirectory of ``mvs_path`` to write the warped masks to.
 
-    Returns:
-        (output directory, stats dict).
+    Returns
+    -------
+    out_dir : Path
+        Directory of warped masks.
+    stats : dict
+        ``masks_written``, ``masks_missing`` and ``warp_seconds``.
+
+    Raises
+    ------
+    ValueError
+        If a camera model is unsupported.
     """
     start = time.perf_counter()
     original_rec = pycolmap.Reconstruction(str(original_sparse_path))

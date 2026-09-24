@@ -11,7 +11,20 @@ def chamfer_distance(
     predicted: o3d.geometry.PointCloud,
     ground_truth: o3d.geometry.PointCloud,
 ) -> float:
-    """Mean of squared nearest-neighbour distances, averaged over both directions."""
+    """Mean of squared nearest-neighbour distances, averaged over both directions.
+
+    Parameters
+    ----------
+    predicted : o3d.geometry.PointCloud
+        Reconstructed cloud.
+    ground_truth : o3d.geometry.PointCloud
+        Reference cloud.
+
+    Returns
+    -------
+    float
+        Distance in the clouds' units.
+    """
     d_pred_to_gt = np.asarray(predicted.compute_point_cloud_distance(ground_truth))
     d_gt_to_pred = np.asarray(ground_truth.compute_point_cloud_distance(predicted))
     return float((np.mean(d_pred_to_gt**2) + np.mean(d_gt_to_pred**2)) / 2.0)
@@ -21,7 +34,20 @@ def hausdorff_distance(
     predicted: o3d.geometry.PointCloud,
     ground_truth: o3d.geometry.PointCloud,
 ) -> float:
-    """Max over both directed Hausdorff distances."""
+    """Max over both directed Hausdorff distances.
+
+    Parameters
+    ----------
+    predicted : o3d.geometry.PointCloud
+        Reconstructed cloud.
+    ground_truth : o3d.geometry.PointCloud
+        Reference cloud.
+
+    Returns
+    -------
+    float
+        Distance in the clouds' units.
+    """
     d_pred_to_gt = np.asarray(predicted.compute_point_cloud_distance(ground_truth))
     d_gt_to_pred = np.asarray(ground_truth.compute_point_cloud_distance(predicted))
     return float(max(d_pred_to_gt.max(), d_gt_to_pred.max()))
@@ -31,7 +57,20 @@ def rms_distance(
     predicted: o3d.geometry.PointCloud,
     ground_truth: o3d.geometry.PointCloud,
 ) -> float:
-    """Root mean square of nearest-neighbour distances from predicted to ground truth."""
+    """Root mean square of nearest-neighbour distances from predicted to ground truth.
+
+    Parameters
+    ----------
+    predicted : o3d.geometry.PointCloud
+        Reconstructed cloud.
+    ground_truth : o3d.geometry.PointCloud
+        Reference cloud.
+
+    Returns
+    -------
+    float
+        Distance in the clouds' units.
+    """
     d = np.asarray(predicted.compute_point_cloud_distance(ground_truth))
     return float(np.sqrt(np.mean(d**2)))
 
@@ -48,6 +87,30 @@ def evaluate(
     ground_truth_ply: Path,
     options: dict,
 ) -> dict[str, float]:
+    """Compare a reconstruction with ground truth using the configured metrics.
+
+    Parameters
+    ----------
+    predicted_ply : Path
+        Reconstructed point cloud or mesh (vertices are used).
+    ground_truth_ply : Path
+        Reference point cloud.
+    options : dict
+        ``evaluation`` section of ``configs/evaluation.yaml``; ``options["metrics"]``
+        maps metric name (``chamfer``, ``hausdorff``, ``rms``) to enabled flag.
+
+    Returns
+    -------
+    dict[str, float]
+        Value per enabled metric.
+
+    Raises
+    ------
+    FileNotFoundError
+        If either file does not exist.
+    ValueError
+        If either cloud is empty or an unknown metric is requested.
+    """
     if not predicted_ply.exists():
         raise FileNotFoundError(f"Predicted point cloud not found: {predicted_ply}")
     if not ground_truth_ply.exists():

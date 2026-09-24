@@ -47,15 +47,22 @@ def marker_protection_radii(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-marker centroid and protection radius, in the input coordinate units.
 
-    Args:
-        marker_corners: {marker_id: {corner_idx: 3D point}}, as returned by
-            scale.aruco_scale.triangulate_marker_corners. Same frame/units as the
-            point cloud passed to filter_membrane_points.
-        margin: added to each marker's max corner-to-centroid distance, in the
-            same units.
+    Parameters
+    ----------
+    marker_corners : dict[int, dict[int, np.ndarray]]
+        ``{marker_id: {corner_idx: 3D point}}``, as returned by
+        ``scale.aruco_scale.triangulate_marker_corners``. Same frame/units as
+        the point cloud passed to ``filter_membrane_points``.
+    margin : float
+        Added to each marker's max corner-to-centroid distance, in the same
+        units.
 
-    Returns:
-        (centroids (M,3), radii (M,)). Both empty when no markers are supplied.
+    Returns
+    -------
+    centroids : np.ndarray
+        ``(M, 3)`` marker centroids; empty when no markers are supplied.
+    radii : np.ndarray
+        ``(M,)`` protection radii; empty when no markers are supplied.
     """
     centroids = []
     radii = []
@@ -88,16 +95,23 @@ def filter_membrane_points(
     cloud unfiltered is the safe failure — deleting pale points with no marker
     protection available would destroy the marker faces.
 
-    Args:
-        pcd: dense cloud. Must carry colours to be filtered.
-        marker_corners: triangulated marker corners in the SAME frame and units
-            as pcd.
-        pale_threshold: mean RGB (0-255) at or above which a point is pale.
-        marker_margin: protection margin, in pcd's units.
+    Parameters
+    ----------
+    pcd : o3d.geometry.PointCloud
+        Dense cloud. Must carry colours to be filtered.
+    marker_corners : dict[int, dict[int, np.ndarray]]
+        Triangulated marker corners in the SAME frame and units as ``pcd``.
+    pale_threshold : float, optional
+        Mean RGB (0-255) at or above which a point is pale.
+    marker_margin : float, optional
+        Protection margin, in ``pcd``'s units.
 
-    Returns:
-        (filtered_pcd, stats) — stats is manifest-ready and always records
-        whether the filter actually ran.
+    Returns
+    -------
+    filtered_pcd : o3d.geometry.PointCloud
+        The filtered (or untouched) cloud.
+    stats : dict
+        Manifest-ready; always records whether the filter actually ran.
     """
     n_before = len(pcd.points)
     stats: dict = {
