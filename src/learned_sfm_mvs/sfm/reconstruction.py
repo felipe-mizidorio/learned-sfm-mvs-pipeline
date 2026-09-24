@@ -13,6 +13,31 @@ def run_incremental_mapping(
     options: dict,
     device: pycolmap.Device = pycolmap.Device.auto,
 ) -> dict[int, pycolmap.Reconstruction]:
+    """Run COLMAP incremental mapping on a matched database.
+
+    Parameters
+    ----------
+    database_path : Path
+        COLMAP database with features and verified matches.
+    image_dir : Path
+        Root image directory.
+    output_path : Path
+        Sparse output directory; one numbered subdirectory per model.
+    options : dict
+        ``incremental_mapping`` section of ``configs/colmap.yaml``.
+    device : pycolmap.Device, optional
+        Bundle adjustment uses the GPU unless this is ``cpu``.
+
+    Returns
+    -------
+    dict[int, pycolmap.Reconstruction]
+        Reconstructed models keyed by index.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the database or ``image_dir`` does not exist.
+    """
     if not database_path.exists():
         raise FileNotFoundError(f"COLMAP database not found: {database_path}")
     if not image_dir.exists():
@@ -48,6 +73,25 @@ def run_incremental_mapping(
 
 
 def load_best_reconstruction(sparse_dir: Path) -> tuple[pycolmap.Reconstruction, Path]:
+    """Load the sparse model with the most registered images.
+
+    Parameters
+    ----------
+    sparse_dir : Path
+        Directory of numbered model subdirectories (``0/``, ``1/``, ...).
+
+    Returns
+    -------
+    reconstruction : pycolmap.Reconstruction
+        The selected model.
+    model_path : Path
+        Its directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``sparse_dir`` is missing or empty.
+    """
     if not sparse_dir.exists():
         raise FileNotFoundError(f"sparse_dir does not exist: {sparse_dir}")
 

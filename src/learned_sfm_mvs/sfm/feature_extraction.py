@@ -18,6 +18,17 @@ def camera_prior_from_manifest(manifest_data: dict) -> tuple[str, str] | None:
 
     The params act as a bundle-adjustment initialization, not a fixed
     calibration — COLMAP still refines focal length during mapping.
+
+    Parameters
+    ----------
+    manifest_data : dict
+        Parsed frames manifest; reads ``camera.focal_length_35mm``,
+        ``camera.width_px`` and ``camera.height_px``.
+
+    Returns
+    -------
+    tuple[str, str] or None
+        ``("SIMPLE_RADIAL", "f,cx,cy,k")``, or None without focal metadata.
     """
     camera = manifest_data.get("camera") or {}
     f35 = camera.get("focal_length_35mm")
@@ -41,6 +52,34 @@ def extract_features(
     mask_path: Path | None = None,
     shared_camera: bool = False,
 ) -> None:
+    """Extract SIFT features into a COLMAP database.
+
+    Parameters
+    ----------
+    database_path : Path
+        COLMAP database to create or extend.
+    image_dir : Path
+        Root image directory (searched recursively when ``image_names`` is None).
+    options : dict
+        ``feature_extraction`` section of ``configs/colmap.yaml``.
+    device : pycolmap.Device, optional
+        ``auto`` uses CUDA when available.
+    camera_model : str or None, optional
+        COLMAP camera model name; implies a single shared camera.
+    camera_params : str or None, optional
+        Comma-separated intrinsics matching ``camera_model``.
+    image_names : list[str] or None, optional
+        Restrict extraction to these names, relative to ``image_dir``.
+    mask_path : Path or None, optional
+        Directory of COLMAP masks (``<image name>.png``, 0 = ignore).
+    shared_camera : bool, optional
+        Use one camera for all images even without explicit intrinsics.
+
+    Raises
+    ------
+    ValueError
+        If ``image_dir`` is missing or contains no images.
+    """
     if not image_dir.exists():
         raise ValueError(f"image_dir does not exist: {image_dir}")
 

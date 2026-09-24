@@ -11,6 +11,25 @@ def match_features(
     options: dict,
     device: pycolmap.Device = pycolmap.Device.auto,
 ) -> None:
+    """Match SIFT features in a COLMAP database.
+
+    Parameters
+    ----------
+    database_path : Path
+        COLMAP database with extracted features.
+    options : dict
+        ``feature_matching`` section of ``configs/colmap.yaml``; ``method`` is
+        ``exhaustive``, ``sequential`` or ``vocab_tree``.
+    device : pycolmap.Device, optional
+        ``auto`` uses CUDA when available.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the database does not exist.
+    ValueError
+        If ``method`` is unknown.
+    """
     if not database_path.exists():
         raise FileNotFoundError(f"COLMAP database not found: {database_path}")
 
