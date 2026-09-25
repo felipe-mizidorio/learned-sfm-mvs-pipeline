@@ -15,11 +15,13 @@ transmvsnet:
   inference:
     # Reference view plus up to num_view - 1 source views per forward pass.
     num_view: 10
-    # Network input is the largest multiple-of-32 size inside these bounds;
-    # depth maps come out at this resolution. Not yet tuned for VRAM or
-    # quality on neonatal captures.
-    max_width: 1920
-    max_height: 1080
+    # Network input is the largest multiple-of-32 size inside these bounds,
+    # applied to the long and short sides whatever the orientation (portrait
+    # 1080x1920 video runs at 1056x1920); never upscaled. Depth maps come out
+    # at this resolution. Not yet tuned for VRAM or quality on neonatal
+    # captures.
+    max_long_side: 1920
+    max_short_side: 1080
     # fp16 autocast. Off: the checkpoint was evaluated in fp32 upstream.
     amp: false
 
