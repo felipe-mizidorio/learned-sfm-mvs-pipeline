@@ -16,11 +16,19 @@ transmvsnet:
     # Reference view plus up to num_view - 1 source views per forward pass.
     num_view: 10
     # Network input is the largest multiple-of-32 size inside these bounds,
-    # applied to the long and short sides whatever the orientation (portrait
-    # 1080x1920 video runs at 1056x1920); never upscaled. Depth maps come out
-    # at this resolution. Not yet tuned for VRAM or quality on neonatal
-    # captures.
-    max_long_side: 1920
+    # applied to the long and short sides whatever the orientation; never
+    # upscaled. Depth maps come out at this resolution.
+    #
+    # 1080 runs 1080x1920 phone video at 576x1056 (about half resolution).
+    # Measured 2026-09-25 against 1920 (full resolution, 1056x1920):
+    # - textured mannequin with ArUco cap: full resolution cut marker-plane
+    #   noise 0.53 -> 0.45 mm, but the Poisson mesh (depth 9) moved only
+    #   0.07 mm median, for 3x the depth-map time and 2.5x the disk;
+    # - plain white 3D-printed head: at full resolution the depth maps
+    #   disagreed between views on the head and fusion kept almost nothing
+    #   (0.4% vs 3.9% of head pixels).
+    # Set 1920 for textured subjects when the extra density is needed.
+    max_long_side: 1080
     max_short_side: 1080
     # fp16 autocast. Off: the checkpoint was evaluated in fp32 upstream.
     amp: false

@@ -3,6 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+import yaml
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("einops")
@@ -18,7 +19,8 @@ from learned_sfm_mvs.mvs.transmvsnet.inference import (  # noqa: E402
 )
 from learned_sfm_mvs.mvs.transmvsnet.views import View  # noqa: E402
 
-CHECKPOINT = Path(__file__).resolve().parents[2] / "models/transmvsnet/model_bld.ckpt"
+REPO = Path(__file__).resolve().parents[2]
+CHECKPOINT = REPO / "models/transmvsnet/model_bld.ckpt"
 
 
 @pytest.mark.parametrize(
@@ -41,6 +43,16 @@ def test_target_size(size, limit, expected):
 def test_target_size_rejects_tiny_images():
     with pytest.raises(ValueError, match="too small"):
         target_size(20, 20, 1920, 1080)
+
+
+def test_shipped_config_runs_phone_video_at_half_resolution():
+    cfg = yaml.safe_load((REPO / "configs/transmvsnet.yaml").read_text())
+    inference = cfg["transmvsnet"]["inference"]
+    # Undistorted 1080x1920 portrait phone frames, as COLMAP writes them.
+    size = target_size(
+        1078, 1917, inference["max_long_side"], inference["max_short_side"]
+    )
+    assert size == (576, 1056)
 
 
 def test_scale_intrinsics_keeps_pixel_centres_aligned():
