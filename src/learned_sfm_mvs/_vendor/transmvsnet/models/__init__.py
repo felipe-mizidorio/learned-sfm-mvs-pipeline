@@ -1,1 +1,1 @@
-from models.TransMVSNet import TransMVSNet, trans_mvsnet_loss
+from .TransMVSNet import TransMVSNet, trans_mvsnet_loss

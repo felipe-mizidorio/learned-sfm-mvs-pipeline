@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,6 +7,8 @@ from .module import *
 from .FMT import FMT_with_pathway
 
 Align_Corners_Range = False
+
+logger = logging.getLogger(__name__)
 
 class PixelwiseNet(nn.Module):
 
@@ -48,14 +52,14 @@ class DepthNet(nn.Module):
         """
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
-        assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
+        assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shape[1], num_depth)
 
         # step 1. feature extraction
         ref_feature, src_features = features[0], features[1:] # [B, C, H, W]
         ref_proj, src_projs = proj_matrices[0], proj_matrices[1:] # [B, 2, 4, 4]
 
         # step 2. differentiable homograph, build cost volume
-        if view_weights == None:
+        if view_weights is None:
             view_weight_list = []
 
         similarity_sum = 0
@@ -69,7 +73,7 @@ class DepthNet(nn.Module):
             warped_volume = homo_warping(src_fea, src_proj_new, ref_proj_new, depth_values)
             similarity = (warped_volume * ref_feature.unsqueeze(2)).mean(1, keepdim=True)
 
-            if view_weights == None:
+            if view_weights is None:
                 view_weight = self.pixel_wise_net(similarity) # [B, 1, H, W]
                 view_weight_list.append(view_weight)
             else:
@@ -99,7 +103,7 @@ class DepthNet(nn.Module):
 
         with torch.no_grad():
             photometric_confidence = torch.max(prob_volume, dim=1)[0]
-        if view_weights == None:
+        if view_weights is None:
             view_weights = torch.cat(view_weight_list, dim=1) # [B, Nview, H, W]
             return {"depth": depth,  "photometric_confidence": photometric_confidence, "prob_volume": prob_volume, "depth_values": depth_values}, view_weights.detach()
         else:
@@ -118,8 +122,8 @@ class TransMVSNet(nn.Module):
         self.arch_mode = arch_mode
         self.cr_base_chs = cr_base_chs
         self.num_stage = len(ndepths)
-        print("**********netphs:{}, depth_intervals_ratio:{},  grad:{}, chs:{}************".format(ndepths,
-            depth_interals_ratio, self.grad_method, self.cr_base_chs))
+        logger.info("TransMVSNet ndepths:%s, depth_intervals_ratio:%s, grad:%s, chs:%s",
+            ndepths, depth_interals_ratio, self.grad_method, self.cr_base_chs)
 
         assert len(ndepths) == len(depth_interals_ratio)
 
@@ -197,7 +201,7 @@ class TransMVSNet(nn.Module):
             if stage_idx + 1 > 1: # for stage 2 and 3
                 view_weights = F.interpolate(view_weights, scale_factor=2, mode="nearest")
 
-            if view_weights == None: # stage 1
+            if view_weights is None: # stage 1
                 outputs_stage, view_weights = self.DepthNet(
                         features_stage,
                         proj_matrices_stage,
