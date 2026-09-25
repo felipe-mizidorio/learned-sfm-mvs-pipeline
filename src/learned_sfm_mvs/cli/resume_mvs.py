@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yaml
 
+from learned_sfm_mvs.cli.guards import guard_against_double_scale
 from learned_sfm_mvs.mvs.fusion import fuse_depth_maps
 from learned_sfm_mvs.mvs.mask_undistortion import undistort_masks_safe
 from learned_sfm_mvs.postprocess.membrane_filter import (
@@ -60,33 +61,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
-
-
-def _guard_against_double_scale(output_dir: Path) -> None:
-    """Refuse --skip-fusion when a previous resume run already scaled dense.ply.
-
-    resume_from_mvs.py scales dense.ply in place after meshing. Re-running with
-    --skip-fusion would re-derive the scale from the (unscaled) sparse model and
-    apply it again to the already-scaled cloud — silently producing geometry
-    scale² times too large. Fail loudly instead.
-    """
-    prev_manifest_path = output_dir / "pipeline_manifest.json"
-    if not prev_manifest_path.exists():
-        return
-    prev = json.loads(prev_manifest_path.read_text())
-    if prev.get("run_script") == "sfm-mvs-resume-mvs" and prev.get(
-        "scale_factor_mm_per_unit"
-    ):
-        logger.error(
-            "dense.ply in '%s' was already scaled to millimetres by a previous "
-            "resume_from_mvs.py run (scale %.6f mm/unit, see pipeline_manifest.json). "
-            "Running with --skip-fusion would double-scale it. Re-run without "
-            "--skip-fusion to regenerate dense.ply from mvs/, or delete "
-            "pipeline_manifest.json if dense.ply was replaced manually.",
-            output_dir,
-            prev["scale_factor_mm_per_unit"],
-        )
-        sys.exit(1)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -190,7 +164,11 @@ def main() -> None:
     mesh_ply = output_dir / "mesh.ply"
 
     if args.skip_fusion:
-        _guard_against_double_scale(output_dir)
+        guard_against_double_scale(
+            output_dir,
+            attempted="--skip-fusion",
+            remedy="Re-run without --skip-fusion to regenerate dense.ply from mvs/",
+        )
 
     manifest_detections = None
     manifest_data = None

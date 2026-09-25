@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from learned_sfm_mvs.cli.guards import guard_against_double_scale
 from learned_sfm_mvs.pipeline.orchestration import (
     build_provenance,
     run_poisson_lcc,
@@ -62,6 +63,11 @@ def main() -> None:
     if not dense_ply.exists():
         logger.error("dense.ply not found at '%s' — cannot resume.", dense_ply)
         sys.exit(1)
+    guard_against_double_scale(
+        output_dir,
+        attempted="sfm-mvs-resume-dense",
+        remedy="Re-run sfm-mvs-resume-mvs without --skip-fusion instead",
+    )
 
     # Load best sparse model from disk.
     reconstruction, best_sparse = load_best_reconstruction(sparse_dir)
