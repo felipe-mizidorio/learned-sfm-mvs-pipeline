@@ -1,0 +1,49 @@
+transmvsnet:
+  # BlendedMVS-finetuned weights (better than the DTU ones outside the lab
+  # setup). Download from the TransMVSNet README's "Models" link; path is
+  # relative to the working directory (/app in the container).
+  checkpoint: models/transmvsnet/model_bld.ckpt
+  # Checked before loading; null skips the check.
+  checkpoint_sha256: 9423b42c02e6108dcdc2b806e008c4ca72a182e1ba8c78e4c2f454e71e7ceb85
+
+  # Must match how the checkpoint was trained (upstream scripts/test_tnt.sh).
+  model:
+    ndepths: [48, 32, 8]
+    depth_interval_ratios: [4, 1, 0.5]
+    num_depth: 192
+
+  inference:
+    # Reference view plus up to num_view - 1 source views per forward pass.
+    num_view: 10
+    # Network input is the largest multiple-of-32 size inside these bounds;
+    # depth maps come out at this resolution. Not yet tuned for VRAM or
+    # quality on neonatal captures.
+    max_width: 1920
+    max_height: 1080
+    # fp16 autocast. Off: the checkpoint was evaluated in fp32 upstream.
+    amp: false
+
+  # Replaces colmap2mvsnet.py (upstream defaults).
+  views:
+    # Source views kept per view, best first (inference uses num_view - 1).
+    num_src: 10
+    # Triangulation-angle score: ideal angle and spreads below/above, degrees.
+    theta0: 5.0
+    sigma1: 1.0
+    sigma2: 10.0
+    # Views observing fewer sparse points get no depth range and are skipped.
+    min_points: 10
+    # Depth range from these percentiles of the view's sparse-point depths,
+    # widened by these factors.
+    depth_percentiles: [1, 99]
+    depth_margins: [0.75, 1.25]
+
+  # Upstream "normal" filter defaults (test.py --conf / --thres_view).
+  fusion:
+    # Product of the three stages' confidences.
+    min_confidence: 0.03
+    min_consistent_views: 5
+    max_reproj_error_px: 1.0
+    max_relative_depth_error: 0.01
+    # Emit each surface point once instead of once per agreeing view.
+    dedupe: true
