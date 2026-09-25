@@ -1,7 +1,7 @@
 transmvsnet:
   # BlendedMVS-finetuned weights (better than the DTU ones outside the lab
-  # setup). Download from the TransMVSNet README's "Models" link; path is
-  # relative to the working directory (/app in the container).
+  # setup). Download from the TransMVSNet README's "Models" link; relative
+  # paths are resolved against the repository root.
   checkpoint: models/transmvsnet/model_bld.ckpt
   # Checked before loading; null skips the check.
   checkpoint_sha256: 9423b42c02e6108dcdc2b806e008c4ca72a182e1ba8c78e4c2f454e71e7ceb85
