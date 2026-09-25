@@ -222,5 +222,8 @@ data/*
 !data/.gitkeep
 models/*
 !models/.gitkeep
-# Weight/uv cache bind-mounted into the container
-cache/
+# Weight/uv cache bind-mounted into the container. The directory itself is
+# tracked: if Docker creates a missing bind-mount source it is root-owned,
+# and the non-root container user cannot write to it.
+cache/*
+!cache/.gitkeep
