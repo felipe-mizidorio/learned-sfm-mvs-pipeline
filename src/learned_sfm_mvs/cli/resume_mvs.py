@@ -24,33 +24,20 @@ import yaml
 from learned_sfm_mvs.cli.guards import guard_against_double_scale
 from learned_sfm_mvs.mvs.fusion import fuse_depth_maps
 from learned_sfm_mvs.mvs.mask_undistortion import undistort_masks_safe
+from learned_sfm_mvs.pipeline.post_fusion import PostFusionOptions, run_post_fusion
 from learned_sfm_mvs.postprocess.membrane_filter import (
     DEFAULT_MARKER_MARGIN_MM,
     DEFAULT_PALE_THRESHOLD,
 )
 from learned_sfm_mvs.pipeline.orchestration import (
     build_provenance,
-    run_head_crop,
-    run_membrane_filter,
-    run_poisson_lcc,
-    run_sor,
     with_fusion_mask_provenance,
     with_membrane_filter_provenance,
     write_pipeline_manifest,
 )
-from learned_sfm_mvs.scale.aruco_scale import (
-    apply_scale_to_mesh,
-    apply_scale_to_ply,
-    recover_scale_details_safe,
-)
-from learned_sfm_mvs.scale.layout_check import check_marker_layout
 from learned_sfm_mvs.scale.policy import (
     UnscaledOutputError,
-    enforce_scale_policy,
-    resolve_scale_status,
-    unscaled_artifact_path,
 )
-from learned_sfm_mvs.scale.self_consistency import check_scale_self_consistency
 from learned_sfm_mvs.sfm.reconstruction import load_best_reconstruction
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -155,13 +142,11 @@ def main() -> None:
         mesh_cfg = yaml.safe_load(f)
     with args.colmap_config.open() as f:
         colmap_cfg = yaml.safe_load(f)
-    filter_cfg = mesh_cfg["point_cloud_filtering"]
 
     output_dir: Path = args.output_dir
     mvs_dir = output_dir / "mvs"
     sparse_dir = output_dir / "sparse"
     dense_ply = output_dir / "dense.ply"
-    mesh_ply = output_dir / "mesh.ply"
 
     if args.skip_fusion:
         guard_against_double_scale(
@@ -230,102 +215,40 @@ def main() -> None:
         )
         logger.info("Stereo fusion took %.1f s", time.perf_counter() - fusion_start)
 
-    # --- Step 2: SOR on raw dense cloud ---
-    logger.info("=== Point cloud filtering (SOR) ===")
-    dense_filtered_ply, sor_stats = run_sor(dense_ply, output_dir, filter_cfg)
-
-    # --- Step 3: Scale recovery (before the crop: the auto crop radius is
-    # derived in millimetres and converted to SfM units via the scale) ---
-    marker_length_mm = aruco_cfg.get("marker_length_mm")
-    scale_factor, marker_points, corners_by_marker = recover_scale_details_safe(
-        reconstruction=reconstruction,
-        image_dir=args.image_dir,
-        marker_length_mm=float(marker_length_mm) if marker_length_mm else None,
-        aruco_dict_id=int(aruco_cfg.get("dict_id", 0)),
-        detections=manifest_detections,
-        min_views=int(aruco_cfg.get("min_views", 2)),
-    )
-    scale_sanity = check_marker_layout(
-        corners_by_marker or {}, scale_factor, aruco_cfg.get("layout_check")
-    )
-    scale_self_consistency = check_scale_self_consistency(
-        corners_by_marker or {}, float(marker_length_mm) if marker_length_mm else None
-    )
-
-    # Gate before the crop and the mesh: a failed scale recovery must not be
-    # able to produce a finished, metric-looking mesh by default.
-    scale_status = resolve_scale_status(scale_factor, scale_sanity)
+    # --- Steps 2-6: SOR, scale, head crop, membrane filter, Poisson, scale ---
     try:
-        enforce_scale_policy(scale_status, allow_unscaled=args.allow_unscaled)
+        post = run_post_fusion(
+            dense_ply,
+            output_dir,
+            reconstruction,
+            args.image_dir,
+            aruco_cfg,
+            mesh_cfg,
+            manifest_detections,
+            PostFusionOptions(
+                head_radius=args.head_radius,
+                membrane_filter=args.membrane_filter,
+                membrane_pale_threshold=args.membrane_pale_threshold,
+                membrane_marker_margin_mm=args.membrane_marker_margin_mm,
+                allow_unscaled=args.allow_unscaled,
+                # resume-mvs has always scaled dense.ply in place (guarded above).
+                scale_dense_ply=True,
+            ),
+        )
     except UnscaledOutputError as exc:
         logger.error("%s", exc)
         sys.exit(1)
 
-    # --- Step 4: Post-fusion spherical crop (on SOR-filtered cloud) ---
-    cropped_ply, crop_stats = run_head_crop(
-        dense_filtered_ply,
-        output_dir,
-        reconstruction,
-        head_radius_override=args.head_radius,
-        scale_factor=scale_factor,
-        marker_points=marker_points,
-    )
-    sor_stats.update(crop_stats)
-
-    # --- Step 4b: Optional membrane filter (opt-in, off by default) ---
-    input_for_poisson = cropped_ply
-    membrane_stats: dict | None = None
-    if args.membrane_filter:
-        input_for_poisson, membrane_stats = run_membrane_filter(
-            cropped_ply,
-            output_dir,
-            marker_corners=corners_by_marker,
-            pale_threshold=args.membrane_pale_threshold,
-            marker_margin_mm=args.membrane_marker_margin_mm,
-            scale_factor=scale_factor,
-        )
-
-    # --- Step 5: Poisson + LCC ---
-    logger.info("=== Poisson surface reconstruction + LCC ===")
-    _, lcc_stats = run_poisson_lcc(
-        input_for_poisson,
-        mesh_ply,
-        output_dir,
-        mesh_cfg["poisson_surface_reconstruction"],
-    )
-
-    # --- Step 6: Apply metric scale once, after meshing ---
-    if scale_factor is not None:
-        # Scale every cloud that was written, each exactly once. The membrane
-        # filter adds a third PLY between the crop and Poisson; scaling only
-        # `input_for_poisson` would leave the cropped cloud in SfM units on a
-        # filtered run but in millimetres on an unfiltered one, making the two
-        # arms incomparable.
-        for ply in dict.fromkeys(
-            [dense_ply, dense_filtered_ply, cropped_ply, input_for_poisson]
-        ):
-            apply_scale_to_ply(ply, scale_factor)
-        apply_scale_to_mesh(mesh_ply, scale_factor)
-        logger.info("Applied scale %.6f mm/unit to outputs.", scale_factor)
-    else:
-        # Reached only under --allow-unscaled. Rename every artefact so a stray
-        # file cannot later be mistaken for metric output.
-        for ply in dict.fromkeys(
-            [dense_ply, dense_filtered_ply, cropped_ply, input_for_poisson]
-        ):
-            ply.rename(unscaled_artifact_path(ply))
-        mesh_ply = mesh_ply.rename(unscaled_artifact_path(mesh_ply))
-
     write_pipeline_manifest(
         output_dir,
         "sfm-mvs-resume-mvs",
-        sor_stats,
-        lcc_stats,
+        post.sor_stats,
+        post.lcc_stats,
         mesh_cfg["poisson_surface_reconstruction"],
-        scale_factor,
-        scale_sanity=scale_sanity,
-        scale_self_consistency=scale_self_consistency,
-        scale_status=scale_status,
+        post.scale_factor,
+        scale_sanity=post.scale_sanity,
+        scale_self_consistency=post.scale_self_consistency,
+        scale_status=post.scale_status,
         provenance=with_membrane_filter_provenance(
             with_fusion_mask_provenance(
                 build_provenance(
@@ -338,7 +261,7 @@ def main() -> None:
                 stats=fusion_mask_stats,
             ),
             enabled=args.membrane_filter,
-            stats=membrane_stats,
+            stats=post.membrane_stats,
         ),
     )
 
