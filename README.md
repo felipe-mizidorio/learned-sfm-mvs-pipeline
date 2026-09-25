@@ -39,6 +39,7 @@ The backends come from `configs/pipeline.yaml` (hloc + TransMVSNet) unless overr
 | `--hloc-config` / `--transmvsnet-config` | `configs/*.yaml` | Learned-backend settings |
 | `--per-image-cameras` | off | One camera per image, for image sets from several cameras. Same-device captures should share one: COLMAP skips images whose size differs from a shared camera, and the run stops if it does. |
 | `--device` | `auto` | `cpu` forces COLMAP stages and TransMVSNet onto the CPU |
+| `--no-feature-masks` | off | Run SfM on whole frames, ignoring the manifest masks. For low-texture subjects (plain white head) whose masked region has too few features to register the cameras. The masks still reach MVS: add `--fusion-masks` to keep the dense cloud on the subject. |
 
 All other flags (camera calibration, frames manifest, head crop, bbox, fusion masks, membrane filter, `--allow-unscaled`, evaluation) behave as in [sfm-mvs-pipeline](https://github.com/felipe-mizidorio/sfm-mvs-pipeline); see `sfm-mvs-run --help`. `--camera-params` accepts comma- or space-separated values.
 

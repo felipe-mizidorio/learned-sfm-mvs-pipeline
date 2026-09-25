@@ -169,8 +169,17 @@ def _parse_args() -> argparse.Namespace:
         "(warped into the undistorted MVS workspace). Off by default: with the "
         "current ArUco convex-hull masks this deletes genuine head surface away "
         "from the markers without reducing silhouette bleed — see "
-        "docs/fusion_masks_report.md. Masks always apply to feature extraction "
-        "regardless of this flag.",
+        "docs/fusion_masks_report.md. Masks apply to feature extraction "
+        "regardless of this flag, unless --no-feature-masks is set.",
+    )
+    parser.add_argument(
+        "--no-feature-masks",
+        action="store_true",
+        help="Do not apply the frames-manifest masks to SfM feature extraction. "
+        "For low-texture subjects (e.g. a plain white head) where the masked "
+        "region yields too few features to register the cameras: the "
+        "background then anchors the poses. The masks still reach MVS, so "
+        "combine with --fusion-masks to keep the dense cloud on the subject.",
     )
     parser.add_argument(
         "--membrane-filter",
@@ -274,6 +283,12 @@ def main() -> None:
             )
     logger.info("Intrinsics source: %s", intrinsics_source)
 
+    feature_mask_path = None if args.no_feature_masks else mask_path
+    if args.no_feature_masks:
+        logger.info(
+            "Feature masks disabled (--no-feature-masks): SfM uses whole frames."
+        )
+
     timer = StageTimer()
 
     # --- Step 1/4: Structure from Motion ---
@@ -282,7 +297,7 @@ def main() -> None:
         image_dir=args.image_dir,
         output_dir=output_dir,
         image_names=manifest_frames or list_images(args.image_dir),
-        mask_dir=mask_path,
+        mask_dir=feature_mask_path,
         camera_model=camera_model,
         camera_params=camera_params,
         shared_camera=not args.per_image_cameras,
@@ -361,6 +376,10 @@ def main() -> None:
         resolved_configs["transmvsnet"] = transmvsnet_cfg
     provenance = build_provenance(args.frames_manifest, resolved_configs)
     provenance["intrinsics_source"] = intrinsics_source
+    provenance["feature_masks"] = {
+        "enabled": feature_mask_path is not None,
+        "source_mask_dir": str(feature_mask_path) if feature_mask_path else None,
+    }
     with_fusion_mask_provenance(
         provenance,
         enabled=mvs.fusion_mask_dir is not None,

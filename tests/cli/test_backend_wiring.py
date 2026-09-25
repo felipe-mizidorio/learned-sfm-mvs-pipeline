@@ -156,6 +156,53 @@ def test_run_skip_mvs_stops_after_sfm(tmp_path):
     stages.run_mvs.assert_not_called()
 
 
+def _masked_frames(tmp_path) -> list[str]:
+    """Images, their masks and a frames manifest pointing at them."""
+    image_dir = _images(tmp_path)
+    (image_dir / "masks").mkdir()
+    manifest = tmp_path / "frames.json"
+    manifest.write_text(
+        json.dumps({"frames": ["f1.jpg", "f2.jpg"], "mask_dir": "masks"})
+    )
+    return [
+        "--image-dir",
+        str(image_dir),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--frames-manifest",
+        str(manifest),
+    ]
+
+
+def test_run_applies_manifest_masks_to_features_by_default(tmp_path):
+    args = _masked_frames(tmp_path)
+    with _Stages(tmp_path) as stages:
+        _main(run, args)
+
+    mask_dir = tmp_path / "images" / "masks"
+    assert stages.run_sfm.call_args.args[1].mask_dir == mask_dir
+    assert stages.run_mvs.call_args.args[1].mask_dir == mask_dir
+    assert _manifest(tmp_path)["feature_masks"] == {
+        "enabled": True,
+        "source_mask_dir": str(mask_dir),
+    }
+
+
+def test_run_no_feature_masks_keeps_masks_for_fusion(tmp_path):
+    args = [*_masked_frames(tmp_path), "--no-feature-masks", "--fusion-masks"]
+    with _Stages(tmp_path) as stages:
+        _main(run, args)
+
+    assert stages.run_sfm.call_args.args[1].mask_dir is None
+    mvs_inputs = stages.run_mvs.call_args.args[1]
+    assert mvs_inputs.mask_dir == tmp_path / "images" / "masks"
+    assert mvs_inputs.fusion_masks is True
+    assert _manifest(tmp_path)["feature_masks"] == {
+        "enabled": False,
+        "source_mask_dir": None,
+    }
+
+
 def test_run_sfm_failure_exits_nonzero(tmp_path):
     args = [
         "--image-dir",
