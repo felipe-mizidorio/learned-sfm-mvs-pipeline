@@ -18,6 +18,34 @@ def fuse_depth_maps(
     bbox_max: list[float] | None = None,
     mask_path: Path | None = None,
 ) -> pycolmap.Reconstruction:
+    """Fuse PatchMatch depth maps into a dense point cloud with COLMAP.
+
+    Parameters
+    ----------
+    mvs_path : Path
+        MVS workspace with ``stereo/depth_maps``.
+    output_path : Path
+        Output PLY (points, normals and colours).
+    options : dict
+        ``stereo_fusion`` section of ``configs/colmap.yaml``.
+    bbox_min, bbox_max : list[float] or None, optional
+        Axis-aligned box that clips fused points; both or neither.
+    mask_path : Path or None, optional
+        Masks aligned to the UNDISTORTED workspace images (see
+        ``mvs/mask_undistortion.py``); only non-zero pixels are fused.
+
+    Returns
+    -------
+    pycolmap.Reconstruction
+        The fused points as returned by COLMAP.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the workspace has no depth maps.
+    RuntimeError
+        If fusion ran but wrote no output file.
+    """
     depth_maps_dir = mvs_path / _DEPTH_MAPS_DIR
     if not depth_maps_dir.exists() or not any(depth_maps_dir.iterdir()):
         raise FileNotFoundError(

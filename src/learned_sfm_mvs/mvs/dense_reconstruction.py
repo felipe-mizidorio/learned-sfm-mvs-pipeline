@@ -20,6 +20,26 @@ def run_dense_reconstruction(
     mvs_path: Path,
     options: dict,
 ) -> None:
+    """Undistort images into an MVS workspace and run PatchMatch Stereo.
+
+    Parameters
+    ----------
+    sparse_path : Path
+        Sparse model (``sparse/<n>``) with the original cameras.
+    image_dir : Path
+        Root image directory.
+    mvs_path : Path
+        MVS workspace to create; depth maps land in ``stereo/depth_maps``.
+    options : dict
+        ``patch_match_stereo`` section of ``configs/colmap.yaml``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``sparse_path`` or ``image_dir`` does not exist.
+    RuntimeError
+        If pycolmap was built without CUDA.
+    """
     if not sparse_path.exists():
         raise FileNotFoundError(f"Sparse reconstruction not found: {sparse_path}")
     if not image_dir.exists():
