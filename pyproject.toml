@@ -37,6 +37,8 @@ learned = [
     "torch (>=2.7.0)",
     "torchvision (>=0.22.0)",
     "kornia (>=0.7.0)",
+    # TransMVSNet's feature matching transformer.
+    "einops (>=0.8.0)",
     "hloc",
     "lightglue",
 ]
@@ -70,6 +72,15 @@ lightglue = { git = "https://github.com/cvg/LightGlue", rev = "eb42fee2d71449efb
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[tool.ruff]
+# Vendored third-party code keeps its upstream style; see its PATCHES.md.
+extend-exclude = ["src/learned_sfm_mvs/_vendor"]
+# Also skip it when pre-commit passes vendored files explicitly.
+force-exclude = true
+
+[tool.pyright]
+exclude = ["src/learned_sfm_mvs/_vendor", "**/__pycache__", "**/.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
