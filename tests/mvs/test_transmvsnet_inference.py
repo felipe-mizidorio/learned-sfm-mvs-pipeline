@@ -25,9 +25,13 @@ CHECKPOINT = Path(__file__).resolve().parents[2] / "models/transmvsnet/model_bld
     ("size", "limit", "expected"),
     [
         ((1920, 1080), (1920, 1080), (1920, 1056)),  # only rounded to /32
-        ((4000, 3000), (1920, 1080), (1440, 1056)),  # height-bound
-        ((4000, 1000), (1920, 1080), (1920, 480)),  # width-bound
+        ((4000, 3000), (1920, 1080), (1440, 1056)),  # short-side-bound
+        ((4000, 1000), (1920, 1080), (1920, 480)),  # long-side-bound
         ((640, 480), (1920, 1080), (640, 480)),  # never upscaled
+        # Portrait: the bounds follow the orientation, not width/height.
+        ((1080, 1920), (1920, 1080), (1056, 1920)),
+        ((3000, 4000), (1920, 1080), (1056, 1440)),
+        ((480, 640), (1920, 1080), (480, 640)),
     ],
 )
 def test_target_size(size, limit, expected):
@@ -128,7 +132,12 @@ def test_run_inference_writes_depth_maps(tmp_path):
             "depth_interval_ratios": [4, 1, 0.5],
             "num_depth": 192,
         },
-        "inference": {"num_view": 3, "max_width": 64, "max_height": 64, "amp": False},
+        "inference": {
+            "num_view": 3,
+            "max_long_side": 64,
+            "max_short_side": 64,
+            "amp": False,
+        },
     }
 
     stats = run_inference(tmp_path, views, cfg, tmp_path / "depth", torch.device("cpu"))

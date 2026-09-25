@@ -31,29 +31,31 @@ _SIZE_BASE = 32
 
 
 def target_size(
-    width: int, height: int, max_width: int, max_height: int
+    width: int, height: int, max_long_side: int, max_short_side: int
 ) -> tuple[int, int]:
     """Network input size: fit inside the maximum, both sides multiples of 32.
 
-    Same rule as upstream's ``scale_mvs_input``.
+    Upstream's ``scale_mvs_input`` bounds width and height, which assumes
+    landscape images; here the bounds apply to the long and short sides, so
+    portrait video is not shrunk to fit a landscape box. Never upscales.
 
     Parameters
     ----------
     width, height : int
         Original image size.
-    max_width, max_height : int
-        Upper bounds.
+    max_long_side, max_short_side : int
+        Upper bounds for the longer and the shorter side.
 
     Returns
     -------
     tuple[int, int]
         ``(width, height)`` for the network.
     """
-    scale = 1.0
-    if height > max_height or width > max_width:
-        scale = max_height / height
-        if scale * width > max_width:
-            scale = max_width / width
+    scale = min(
+        1.0,
+        max_long_side / max(width, height),
+        max_short_side / min(width, height),
+    )
     new_w = int(scale * width // _SIZE_BASE * _SIZE_BASE)
     new_h = int(scale * height // _SIZE_BASE * _SIZE_BASE)
     if new_w == 0 or new_h == 0:
@@ -317,7 +319,10 @@ def run_inference(
     by_id = {v.image_id: v for v in views}
     ref = views[0]
     size = target_size(
-        ref.width, ref.height, int(infer_cfg["max_width"]), int(infer_cfg["max_height"])
+        ref.width,
+        ref.height,
+        int(infer_cfg["max_long_side"]),
+        int(infer_cfg["max_short_side"]),
     )
 
     @lru_cache(maxsize=int(infer_cfg["num_view"]) * 4)
