@@ -1,8 +1,11 @@
-"""Re-run stereo fusion (optionally with bbox), SOR, crop to head region,
-then scale recovery and Poisson + LCC mesh.
+"""Re-fuse existing depth maps (optionally with bbox or masks), then SOR,
+scale recovery, head crop and Poisson + LCC mesh.
+
+The MVS backend defaults to the one recorded in the previous run's
+pipeline_manifest.json, so its depth maps are the ones re-fused.
 
 Typical usage (no bbox — full fusion, SOR + automatic ArUco-derived head crop):
-    uv run python scripts/resume_from_mvs.py \\
+    uv run sfm-mvs-resume-mvs \\
         --output-dir data/processed/<session> \\
         --image-dir path/to/filtered/frames \\
         --frames-manifest path/to/manifest.json
@@ -16,19 +19,24 @@ import argparse
 import json
 import logging
 import sys
-import time
 from pathlib import Path
 
-import yaml
-
 from learned_sfm_mvs.cli.guards import guard_against_double_scale
-from learned_sfm_mvs.mvs.fusion import fuse_depth_maps
-from learned_sfm_mvs.mvs.mask_undistortion import undistort_masks_safe
+from learned_sfm_mvs.cli.options import (
+    CONFIGS,
+    previous_mvs_backend,
+    add_backend_arguments,
+    load_transmvsnet_config,
+    load_yaml,
+    pipeline_defaults,
+)
+from learned_sfm_mvs.mvs.base import MvsInputs, fuse
 from learned_sfm_mvs.pipeline.post_fusion import PostFusionOptions, run_post_fusion
 from learned_sfm_mvs.postprocess.membrane_filter import (
     DEFAULT_MARKER_MARGIN_MM,
     DEFAULT_PALE_THRESHOLD,
 )
+from learned_sfm_mvs.pipeline.run_info import StageTimer, with_backend_provenance
 from learned_sfm_mvs.pipeline.orchestration import (
     build_provenance,
     with_fusion_mask_provenance,
@@ -39,8 +47,6 @@ from learned_sfm_mvs.scale.policy import (
     UnscaledOutputError,
 )
 from learned_sfm_mvs.sfm.reconstruction import load_best_reconstruction
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,15 +63,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--image-dir", required=True, type=Path)
     parser.add_argument("--frames-manifest", default=None, type=Path)
-    parser.add_argument(
-        "--aruco-config", default=_REPO_ROOT / "configs/aruco.yaml", type=Path
-    )
-    parser.add_argument(
-        "--mesh-config", default=_REPO_ROOT / "configs/mesh.yaml", type=Path
-    )
-    parser.add_argument(
-        "--colmap-config", default=_REPO_ROOT / "configs/colmap.yaml", type=Path
-    )
+    parser.add_argument("--aruco-config", default=CONFIGS / "aruco.yaml", type=Path)
+    parser.add_argument("--mesh-config", default=CONFIGS / "mesh.yaml", type=Path)
+    parser.add_argument("--colmap-config", default=CONFIGS / "colmap.yaml", type=Path)
     parser.add_argument(
         "--bbox-min",
         nargs=3,
@@ -130,23 +130,33 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_MARKER_MARGIN_MM,
         help="Protection margin added to each marker's own corner extent, in mm.",
     )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu"],
+        default="auto",
+        help="auto: CUDA when available; cpu forces TransMVSNet fusion onto CPU.",
+    )
+    add_backend_arguments(parser, sfm=False)
     return parser.parse_args()
 
 
 def main() -> None:
+    """Re-fuse depth maps and re-run everything after fusion."""
     args = _parse_args()
 
-    with args.aruco_config.open() as f:
-        aruco_cfg = yaml.safe_load(f).get("aruco", {})
-    with args.mesh_config.open() as f:
-        mesh_cfg = yaml.safe_load(f)
-    with args.colmap_config.open() as f:
-        colmap_cfg = yaml.safe_load(f)
+    aruco_cfg = load_yaml(args.aruco_config).get("aruco", {})
+    mesh_cfg = load_yaml(args.mesh_config)
+    colmap_cfg = load_yaml(args.colmap_config)
+    transmvsnet_cfg = load_transmvsnet_config(args.transmvsnet_config)
 
     output_dir: Path = args.output_dir
-    mvs_dir = output_dir / "mvs"
     sparse_dir = output_dir / "sparse"
     dense_ply = output_dir / "dense.ply"
+    mvs_backend = (
+        args.mvs_backend
+        or previous_mvs_backend(output_dir)
+        or pipeline_defaults(args.pipeline_config)["mvs_backend"]
+    )
 
     if args.skip_fusion:
         guard_against_double_scale(
@@ -188,57 +198,70 @@ def main() -> None:
         reconstruction.num_reg_images(),
     )
 
-    # --- Step 1: Stereo fusion ---
+    # --- Step 1: Fusion of the existing depth maps ---
+    timer = StageTimer()
     fusion_mask_dir: Path | None = None
     fusion_mask_stats: dict | None = None
+    # Always recorded, so the next resume re-fuses the same backend's maps.
+    mvs_provenance: dict = {"name": mvs_backend, "fusion": None}
     if args.skip_fusion:
         logger.info(
             "Skipping stereo fusion (--skip-fusion). Using existing '%s'.", dense_ply
         )
     else:
-        if mask_path is not None:
-            logger.info("=== Undistorting masks for stereo fusion ===")
-            fusion_mask_dir, fusion_mask_stats = undistort_masks_safe(
-                mask_path=mask_path,
-                original_sparse_path=best_sparse,
-                mvs_path=mvs_dir,
+        logger.info("=== Fusion (%s) ===", mvs_backend)
+        with timer("fusion"):
+            fused = fuse(
+                mvs_backend,
+                MvsInputs(
+                    sparse_model_path=best_sparse,
+                    image_dir=args.image_dir,
+                    output_dir=output_dir,
+                    mask_dir=mask_path,
+                    fusion_masks=mask_path is not None,
+                    bbox_min=args.bbox_min,
+                    bbox_max=args.bbox_max,
+                    device=args.device,
+                ),
+                {"colmap": colmap_cfg, "transmvsnet": transmvsnet_cfg},
             )
-        logger.info("=== Stereo fusion ===")
-        fusion_start = time.perf_counter()
-        fuse_depth_maps(
-            mvs_path=mvs_dir,
-            output_path=dense_ply,
-            options=colmap_cfg["stereo_fusion"],
-            bbox_min=args.bbox_min,
-            bbox_max=args.bbox_max,
-            mask_path=fusion_mask_dir,
-        )
-        logger.info("Stereo fusion took %.1f s", time.perf_counter() - fusion_start)
+        fusion_mask_dir = fused.fusion_mask_dir
+        fusion_mask_stats = fused.stats["fusion_masks"]
+        mvs_provenance = {"name": mvs_backend, "fusion": fused.stats["fusion"]}
 
     # --- Steps 2-6: SOR, scale, head crop, membrane filter, Poisson, scale ---
     try:
-        post = run_post_fusion(
-            dense_ply,
-            output_dir,
-            reconstruction,
-            args.image_dir,
-            aruco_cfg,
-            mesh_cfg,
-            manifest_detections,
-            PostFusionOptions(
-                head_radius=args.head_radius,
-                membrane_filter=args.membrane_filter,
-                membrane_pale_threshold=args.membrane_pale_threshold,
-                membrane_marker_margin_mm=args.membrane_marker_margin_mm,
-                allow_unscaled=args.allow_unscaled,
-                # resume-mvs has always scaled dense.ply in place (guarded above).
-                scale_dense_ply=True,
-            ),
-        )
+        with timer("post_fusion"):
+            post = run_post_fusion(
+                dense_ply,
+                output_dir,
+                reconstruction,
+                args.image_dir,
+                aruco_cfg,
+                mesh_cfg,
+                manifest_detections,
+                PostFusionOptions(
+                    head_radius=args.head_radius,
+                    membrane_filter=args.membrane_filter,
+                    membrane_pale_threshold=args.membrane_pale_threshold,
+                    membrane_marker_margin_mm=args.membrane_marker_margin_mm,
+                    allow_unscaled=args.allow_unscaled,
+                    # resume-mvs has always scaled dense.ply in place (guarded above).
+                    scale_dense_ply=True,
+                ),
+            )
     except UnscaledOutputError as exc:
         logger.error("%s", exc)
         sys.exit(1)
 
+    resolved_configs = {
+        "pipeline": {"mvs_backend": mvs_backend},
+        "aruco": aruco_cfg,
+        "colmap": colmap_cfg,
+        "mesh": mesh_cfg,
+    }
+    if mvs_backend == "transmvsnet" and not args.skip_fusion:
+        resolved_configs["transmvsnet"] = transmvsnet_cfg
     write_pipeline_manifest(
         output_dir,
         "sfm-mvs-resume-mvs",
@@ -249,19 +272,21 @@ def main() -> None:
         scale_sanity=post.scale_sanity,
         scale_self_consistency=post.scale_self_consistency,
         scale_status=post.scale_status,
-        provenance=with_membrane_filter_provenance(
-            with_fusion_mask_provenance(
-                build_provenance(
-                    args.frames_manifest,
-                    {"aruco": aruco_cfg, "colmap": colmap_cfg, "mesh": mesh_cfg},
+        provenance=with_backend_provenance(
+            with_membrane_filter_provenance(
+                with_fusion_mask_provenance(
+                    build_provenance(args.frames_manifest, resolved_configs),
+                    enabled=fusion_mask_dir is not None,
+                    source_mask_dir=mask_path,
+                    workspace_mask_dir=fusion_mask_dir,
+                    stats=fusion_mask_stats,
                 ),
-                enabled=fusion_mask_dir is not None,
-                source_mask_dir=mask_path,
-                workspace_mask_dir=fusion_mask_dir,
-                stats=fusion_mask_stats,
+                enabled=args.membrane_filter,
+                stats=post.membrane_stats,
             ),
-            enabled=args.membrane_filter,
-            stats=post.membrane_stats,
+            sfm=None,
+            mvs=mvs_provenance,
+            stage_timings=timer.stages,
         ),
     )
 

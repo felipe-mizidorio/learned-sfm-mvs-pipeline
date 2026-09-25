@@ -9,6 +9,8 @@ from pathlib import Path
 import yaml
 
 from learned_sfm_mvs.cli.guards import guard_against_double_scale
+from learned_sfm_mvs.cli.options import previous_mvs_backend
+from learned_sfm_mvs.pipeline.run_info import with_backend_provenance
 from learned_sfm_mvs.pipeline.orchestration import (
     build_provenance,
     run_poisson_lcc,
@@ -63,6 +65,9 @@ def main() -> None:
     if not dense_ply.exists():
         logger.error("dense.ply not found at '%s' — cannot resume.", dense_ply)
         sys.exit(1)
+    # Read before this run overwrites the manifest: carried forward so a later
+    # resume-mvs re-fuses the backend that produced mvs/.
+    mvs_backend = previous_mvs_backend(output_dir)
     guard_against_double_scale(
         output_dir,
         attempted="sfm-mvs-resume-dense",
@@ -131,8 +136,13 @@ def main() -> None:
         scale_factor,
         scale_sanity=scale_sanity,
         scale_self_consistency=scale_self_consistency,
-        provenance=build_provenance(
-            args.frames_manifest, {"aruco": aruco_cfg, "mesh": mesh_cfg}
+        provenance=with_backend_provenance(
+            build_provenance(
+                args.frames_manifest, {"aruco": aruco_cfg, "mesh": mesh_cfg}
+            ),
+            sfm=None,
+            mvs={"name": mvs_backend, "fusion": None} if mvs_backend else None,
+            stage_timings={},
         ),
     )
 

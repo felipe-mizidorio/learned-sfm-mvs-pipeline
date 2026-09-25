@@ -422,6 +422,11 @@ NON_DETERMINISM_NOTES = [
     "Feature matching and incremental mapping are multi-threaded; "
     "bundle-adjusted poses (and undistorted image sizes derived from them) "
     "vary slightly between runs, as can sparse model selection.",
+    "GPU inference of the learned backends (hloc ALIKED/LightGlue/NetVLAD, "
+    "TransMVSNet) uses cuDNN kernels that are not guaranteed bit-exact across "
+    "runs, drivers or GPUs; torch deterministic mode is not enabled.",
+    "TransMVSNet fusion is deterministic given identical depth maps "
+    "(re-fusion via sfm-mvs-resume-mvs reproduces dense.ply).",
     "Poisson reconstruction, SOR, cropping and scale recovery are "
     "deterministic given identical inputs.",
 ]
