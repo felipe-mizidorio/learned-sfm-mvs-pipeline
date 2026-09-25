@@ -55,20 +55,20 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 FROM base AS runtime
 
-# Stage-scoped: re-declare so the cache mounts below see them.
-ARG UID=1000
-ARG GID=1000
-ENV UV_COMPILE_BYTECODE=1
+# No uv cache here: a cache mount keeps every downloaded wheel (~9 GB with the
+# CUDA wheels) in the builder cache on the shared GPU server. The dependency
+# layer below is still reused as long as pyproject.toml/uv.lock are unchanged;
+# only dependency changes re-download.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1
 
 # Dependencies first (cached layer), project last.
-RUN --mount=type=cache,target=/cache/uv,uid=${UID},gid=${GID} \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-install-project --no-dev --group learned
 
 COPY --chown=app:app . /app
-RUN --mount=type=cache,target=/cache/uv,uid=${UID},gid=${GID} \
-    uv sync --frozen --no-dev --group learned
+RUN uv sync --frozen --no-dev --group learned
 
 CMD ["bash"]
 
