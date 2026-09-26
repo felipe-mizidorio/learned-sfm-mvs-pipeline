@@ -10,8 +10,9 @@ Typical usage (no bbox — full fusion, SOR + automatic ArUco-derived head crop)
         --image-dir path/to/filtered/frames \\
         --frames-manifest path/to/manifest.json
 
-The head-crop radius is derived automatically from the triangulated ArUco
-markers; --head-radius is a debug-only override (0 disables the crop).
+The head crop needs no parameters: the frames-manifest masks carve the dense
+cloud (silhouette crop), or, without masks, a sphere is sized from the ArUco
+markers.
 Optionally add --bbox-min / --bbox-max to also clip at the fusion step.
 """
 
@@ -81,16 +82,6 @@ def _parse_args() -> argparse.Namespace:
         metavar=("X", "Y", "Z"),
         default=None,
         help="Optional fusion-time bbox max (SfM units) — coarse background cut.",
-    )
-    parser.add_argument(
-        "--head-radius",
-        type=float,
-        default=None,
-        help="DEBUG override for the spherical head-crop radius, in SfM units. "
-        "Not needed in normal use: the radius is auto-derived from the "
-        "triangulated ArUco markers and marker_length_mm; without markers the "
-        "crop uses the frames-manifest masks (silhouette crop, configs/mesh.yaml). "
-        "0 disables the crop.",
     )
     parser.add_argument(
         "--skip-fusion",
@@ -250,7 +241,6 @@ def main() -> None:
                 mesh_cfg,
                 manifest_detections,
                 PostFusionOptions(
-                    head_radius=args.head_radius,
                     membrane_filter=args.membrane_filter,
                     membrane_pale_threshold=args.membrane_pale_threshold,
                     membrane_marker_margin_mm=args.membrane_marker_margin_mm,

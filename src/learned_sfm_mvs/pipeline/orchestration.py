@@ -225,19 +225,20 @@ def run_head_crop(
     dense_filtered_ply: Path,
     output_dir: Path,
     reconstruction: pycolmap.Reconstruction,
-    head_radius_override: float | None,
     scale_factor: float | None,
     marker_points: np.ndarray | None,
     mask_dir: Path | None = None,
     silhouette_cfg: dict | None = None,
 ) -> tuple[Path, dict]:
-    """Crop the SOR-filtered cloud to the head region.
+    """Crop the SOR-filtered cloud to the head region; no manual parameters.
 
-    Method: explicit radius override (debug) or ArUco markers → spherical
-    crop; else, with subject masks, the markerless silhouette crop (see
-    ``postprocess.silhouette_filter``); else a spherical crop of
-    DEFAULT_HEAD_RADIUS_SFM, which is also the fallback when no mask is
-    usable.
+    Method: with subject masks from the frames manifest, the silhouette crop
+    (see ``postprocess.silhouette_filter``): the masks already say where the
+    head is, with or without markers. Without usable masks, a spherical crop
+    whose centre and radius come from the ArUco markers, or the fallbacks
+    below.
+
+    Sphere fallback only:
 
     Centre selection: centroid of the triangulated ArUco corners when at least
     HEAD_CROP_MIN_MARKER_CORNERS are available, else the least-squares
@@ -247,9 +248,8 @@ def run_head_crop(
     intrinsically biased toward the cranial interior, with no anatomical
     constant needed.
 
-    Radius selection: explicit override (debug) > auto-derived from ArUco
-    markers > DEFAULT_HEAD_RADIUS_SFM fallback. An override of 0 (or negative)
-    disables the crop entirely.
+    Radius selection: auto-derived from ArUco markers, else
+    DEFAULT_HEAD_RADIUS_SFM.
 
     Parameters
     ----------
@@ -258,15 +258,14 @@ def run_head_crop(
     output_dir : Path
         Run output directory; the cropped cloud is written here.
     reconstruction : pycolmap.Reconstruction
-        Sparse model, for the optical-axis centre fallback.
-    head_radius_override : float or None
-        Debug radius override in SfM units; ``<= 0`` disables the crop.
+        Sparse model: cameras for the silhouette crop, optical-axis centre
+        for the sphere fallback.
     scale_factor : float or None
         Recovered mm/SfM-unit factor.
     marker_points : np.ndarray or None
         ``(N, 3)`` triangulated marker corners in SfM units.
     mask_dir : Path or None, optional
-        Original-frame subject masks for the markerless silhouette crop.
+        Original-frame subject masks for the silhouette crop.
     silhouette_cfg : dict or None, optional
         ``silhouette_crop`` section of ``configs/mesh.yaml``; None disables
         the silhouette crop.
@@ -275,23 +274,11 @@ def run_head_crop(
     -------
     input_for_poisson : Path
         The PLY the mesh stage should consume: the cropped file, or
-        ``dense_filtered_ply`` when the crop is skipped or removes every point.
+        ``dense_filtered_ply`` when the crop removes every point.
     crop_stats : dict
         Stats for pipeline_manifest.json.
     """
-    if head_radius_override is not None and head_radius_override <= 0:
-        logger.info("Head crop disabled (--head-radius %s).", head_radius_override)
-        return dense_filtered_ply, {}
-
-    has_markers = (
-        marker_points is not None and len(marker_points) >= HEAD_CROP_MIN_MARKER_CORNERS
-    )
-    if (
-        head_radius_override is None
-        and not has_markers
-        and mask_dir is not None
-        and silhouette_cfg
-    ):
+    if mask_dir is not None and silhouette_cfg:
         cropped = _silhouette_crop(
             dense_filtered_ply, output_dir, reconstruction, mask_dir, silhouette_cfg
         )
@@ -299,7 +286,7 @@ def run_head_crop(
             return cropped
         logger.warning("Silhouette crop unusable; falling back to the spherical crop.")
 
-    if has_markers and marker_points is not None:
+    if marker_points is not None and len(marker_points) >= HEAD_CROP_MIN_MARKER_CORNERS:
         head_center = np.asarray(marker_points).mean(axis=0)
         center_source = "aruco_centroid"
         logger.info(
@@ -323,19 +310,16 @@ def run_head_crop(
     logger.info("Head center (SfM, %s): %s", center_source, np.round(head_center, 4))
 
     clamp_info: dict = {}
-    if head_radius_override is not None:
-        radius, radius_source = float(head_radius_override), "override"
+    auto_result = auto_head_radius(head_center, marker_points, scale_factor)
+    if auto_result is None:
+        logger.warning(
+            "No usable ArUco scale/markers for auto crop radius — "
+            "falling back to %.2f SfM units.",
+            DEFAULT_HEAD_RADIUS_SFM,
+        )
+        radius, radius_source = DEFAULT_HEAD_RADIUS_SFM, "default_fallback"
     else:
-        auto_result = auto_head_radius(head_center, marker_points, scale_factor)
-        if auto_result is None:
-            logger.warning(
-                "No usable ArUco scale/markers for auto crop radius — "
-                "falling back to %.2f SfM units.",
-                DEFAULT_HEAD_RADIUS_SFM,
-            )
-            radius, radius_source = DEFAULT_HEAD_RADIUS_SFM, "default_fallback"
-        else:
-            (radius, clamp_info), radius_source = auto_result, "aruco_auto"
+        (radius, clamp_info), radius_source = auto_result, "aruco_auto"
 
     logger.info(
         "=== Post-fusion spherical crop (radius=%.3f SfM units, %s) ===",
@@ -349,7 +333,7 @@ def run_head_crop(
     if len(pcd_crop.points) == 0:
         logger.warning(
             "Crop removed all points! Falling back to SOR-filtered dense cloud. "
-            "Check camera poses / marker triangulation, or override --head-radius."
+            "Check camera poses, marker triangulation and the frames-manifest masks."
         )
         return dense_filtered_ply, {}
 

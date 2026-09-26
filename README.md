@@ -43,7 +43,7 @@ The backends come from `configs/pipeline.yaml` (hloc + TransMVSNet) unless overr
 
 All other flags (camera calibration, frames manifest, head crop, bbox, fusion masks, membrane filter, `--allow-unscaled`, evaluation) behave as in [sfm-mvs-pipeline](https://github.com/felipe-mizidorio/sfm-mvs-pipeline); see `sfm-mvs-run --help`. `--camera-params` accepts comma- or space-separated values.
 
-Head crop: with ArUco markers, a sphere sized from the markers (as before). Without markers (markerless captures), the frames-manifest masks carve the dense cloud instead: a point is kept when it lies inside the subject mask in most masked views that see it (`configs/mesh.yaml` → `silhouette_crop`). `--head-radius` overrides both.
+Head crop, no parameters: the frames-manifest masks carve the dense cloud, with or without ArUco markers. A point is kept when it lies inside the subject mask in most masked views that see it (`configs/mesh.yaml` → `silhouette_crop`). Only without usable masks is the cloud cropped to a sphere sized from the markers. (`--head-radius` from sfm-mvs-pipeline is gone.)
 
 Resuming an existing output directory:
 

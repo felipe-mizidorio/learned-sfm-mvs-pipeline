@@ -153,13 +153,6 @@ def test_allow_unscaled_keeps_dense_ply_for_run(tmp_path):
     assert (tmp_path / "dense.ply").exists()
 
 
-def test_head_radius_zero_disables_crop(tmp_path):
-    result = _run(tmp_path, SCALE, head_radius=0)
-
-    assert "head_crop" not in result.sor_stats
-    assert not (tmp_path / "dense_filtered_cropped.ply").exists()
-
-
 def test_masks_and_silhouette_config_reach_the_head_crop(tmp_path):
     silhouette = {"min_views": 5, "min_inside_fraction": 0.8}
     with patch(

@@ -35,8 +35,8 @@ point_cloud_filtering:
   std_ratio: 2.0
 
 silhouette_crop:
-  # Markerless head crop, used when no ArUco markers are triangulated and the
-  # frames manifest has masks (an explicit --head-radius takes precedence).
+  # Head crop whenever the frames manifest has masks, with or without ArUco
+  # markers (the sphere sized from the markers is only the fallback).
   # A point is kept when it projects inside the subject mask in at least
   # min_inside_fraction of the masked views that have it in frame, and at
   # least min_views such views exist: a subject point lies inside the
