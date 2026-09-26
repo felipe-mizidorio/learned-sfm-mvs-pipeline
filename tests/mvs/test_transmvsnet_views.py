@@ -1,5 +1,6 @@
 import math
 
+import cv2
 import numpy as np
 import pycolmap
 import pytest
@@ -142,3 +143,131 @@ def test_build_views_rejects_distorted_workspace():
 def test_build_views_drops_views_without_enough_points():
     reconstruction = _synthetic(num_points=5)
     assert build_views(reconstruction, CFG) == []
+
+
+# --- depth ranges from subject masks ---
+
+# Margins off, so the tests see which points set the range.
+CFG_NO_MARGINS = {**CFG, "depth_margins": [1.0, 1.0]}
+
+
+def _subject_scene(tmp_path):
+    """Points on the unit sphere with a small cap as the 'subject', and per-view
+    masks of the visible cap's silhouette (as warped workspace masks)."""
+    pycolmap.set_random_seed(0)
+    reconstruction = _synthetic(num_points=2000)
+    # The synthetic views see through the sphere; drop what a real one hides
+    # (points facing away from the camera), or far-side points would fall
+    # inside the subject's silhouette.
+    for image_id, image in list(reconstruction.images.items()):
+        centre = image.projection_center()
+        hidden = [
+            idx
+            for idx, p in enumerate(image.points2D)
+            if p.has_point3D()
+            and np.dot(
+                reconstruction.points3D[p.point3D_id].xyz,
+                centre - reconstruction.points3D[p.point3D_id].xyz,
+            )
+            <= 0
+        ]
+        for idx in hidden:
+            reconstruction.delete_observation(image_id, idx)
+    subject = {
+        pid for pid, point in reconstruction.points3D.items() if point.xyz[0] > 0.9
+    }
+    mask_dir = tmp_path / "view_masks"
+    mask_dir.mkdir()
+    for image in reconstruction.images.values():
+        camera = reconstruction.cameras[image.camera_id]
+        mask = np.zeros((camera.height, camera.width), np.uint8)
+        xy = np.array([p.xy for p in _observed(image, subject)]).reshape(-1, 2)
+        if len(xy) >= 3:
+            cv2.fillConvexPoly(mask, cv2.convexHull(xy.astype(np.int32)), 255)
+            mask = cv2.dilate(mask, np.ones((7, 7), np.uint8))
+        cv2.imwrite(str(mask_dir / f"{image.name}.png"), mask)
+    return reconstruction, subject, mask_dir
+
+
+def _observed(image, point_ids):
+    return [p for p in image.points2D if p.has_point3D() and p.point3D_id in point_ids]
+
+
+def _depths(reconstruction, view, point_ids):
+    xyz = np.array([reconstruction.points3D[p].xyz for p in point_ids])
+    return (xyz @ view.extrinsic[:3, :3].T + view.extrinsic[:3, 3])[:, 2]
+
+
+def _assert_range_fits(view, depths):
+    assert view.depth_min == pytest.approx(np.percentile(depths, 1), rel=0.05)
+    assert view.depth_max == pytest.approx(np.percentile(depths, 99), rel=0.05)
+
+
+def test_masks_restrict_depth_range_to_the_subject(tmp_path):
+    reconstruction, subject, mask_dir = _subject_scene(tmp_path)
+    unmasked = {v.image_id: v for v in build_views(reconstruction, CFG_NO_MARGINS)}
+
+    views = build_views(reconstruction, CFG_NO_MARGINS, mask_dir=mask_dir)
+
+    assert len(views) == 6
+    seeing = 0
+    for view in views:
+        visible = [
+            p.point3D_id
+            for p in _observed(reconstruction.images[view.image_id], subject)
+        ]
+        before = unmasked[view.image_id]
+        assert before.depth_range_source == "all_points"
+        if len(visible) < CFG["min_points"]:
+            assert view.depth_range_source in {"subject_projected", "all_points"}
+            continue
+        seeing += 1
+        assert view.depth_range_source == "subject_observed"
+        _assert_range_fits(view, _depths(reconstruction, view, visible))
+        assert view.depth_max - view.depth_min < before.depth_max - before.depth_min
+    assert seeing >= 2
+
+
+def test_view_seeing_few_subject_points_uses_projected_subject_points(tmp_path):
+    reconstruction, subject, mask_dir = _subject_scene(tmp_path)
+    image_id = max(
+        reconstruction.images,
+        key=lambda i: len(_observed(reconstruction.images[i], subject)),
+    )
+    image = reconstruction.images[image_id]
+    visible = [p.point3D_id for p in _observed(image, subject)]
+    on_subject = [
+        idx
+        for idx, p in enumerate(image.points2D)
+        if p.has_point3D() and p.point3D_id in subject
+    ]
+    for idx in on_subject[3:]:  # below min_points, but other views still see them
+        reconstruction.delete_observation(image_id, idx)
+
+    views = {
+        v.image_id: v
+        for v in build_views(reconstruction, CFG_NO_MARGINS, mask_dir=mask_dir)
+    }
+
+    view = views[image_id]
+    assert view.depth_range_source == "subject_projected"
+    # COLMAP drops points left with a single observation.
+    surviving = [p for p in visible if p in reconstruction.points3D]
+    _assert_range_fits(view, _depths(reconstruction, view, surviving))
+
+
+def test_full_frame_or_missing_masks_keep_all_point_ranges(tmp_path):
+    reconstruction = _synthetic()
+    mask_dir = tmp_path / "view_masks"
+    mask_dir.mkdir()
+    names = sorted(im.name for im in reconstruction.images.values())
+    for name in names[:3]:  # segmentation fallbacks; the other views have no mask
+        cv2.imwrite(str(mask_dir / f"{name}.png"), np.full((480, 640), 255, np.uint8))
+
+    expected = build_views(reconstruction, CFG)
+    views = build_views(reconstruction, CFG, mask_dir=mask_dir)
+
+    assert [(v.depth_min, v.depth_max) for v in views] == [
+        (e.depth_min, e.depth_max) for e in expected
+    ]
+    assert {v.depth_range_source for v in views} == {"all_points"}

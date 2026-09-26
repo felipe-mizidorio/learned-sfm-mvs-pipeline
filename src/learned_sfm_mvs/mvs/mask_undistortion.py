@@ -138,8 +138,10 @@ def undistort_masks_safe(
         )
     except (ValueError, OSError) as exc:
         logger.error(
-            "Fusion mask undistortion FAILED (%s). Continuing with UNMASKED fusion — "
-            "the dense cloud will contain background that masks would have removed.",
+            "Mask undistortion into '%s' FAILED (%s). Continuing without these "
+            "masks: fusion_masks fuses UNMASKED (background stays in the dense "
+            "cloud), view_masks takes depth ranges from all sparse points.",
+            output_dir_name,
             exc,
         )
         return None, {"enabled_requested": True, "failure": str(exc)}
@@ -225,7 +227,7 @@ def undistort_masks(
         "warp_seconds": round(time.perf_counter() - start, 3),
     }
     logger.info(
-        "Fusion masks: %d written, %d missing -> '%s' (%.1f s)",
+        "Masks undistorted: %d written, %d missing -> '%s' (%.1f s)",
         written,
         missing,
         out_dir,
@@ -236,8 +238,10 @@ def undistort_masks(
         # mask is a silent hole in the masking — surface it rather than let the
         # per-image debug warnings scroll past.
         logger.warning(
-            "%d of %d images have no fusion mask and will be fused UNMASKED.",
+            "%d of %d images have no mask in '%s': fusion_masks fuses them "
+            "UNMASKED, view_masks gives them all-point depth ranges.",
             missing,
             written + missing,
+            out_dir.name,
         )
     return out_dir, stats
