@@ -2,12 +2,14 @@
 
 import logging
 import shutil
+from collections import Counter
 from pathlib import Path
 
 import pycolmap
 import torch
 
 from learned_sfm_mvs.mvs.base import MvsInputs, undistort_workspace
+from learned_sfm_mvs.mvs.mask_undistortion import undistort_masks_safe
 from learned_sfm_mvs.mvs.transmvsnet.fusion import fuse_depth_maps
 from learned_sfm_mvs.mvs.transmvsnet.inference import run_inference
 from learned_sfm_mvs.mvs.transmvsnet.views import build_views
@@ -33,6 +35,10 @@ def select_device(inputs: MvsInputs) -> torch.device:
 def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
     """Undistort, prepare views and run TransMVSNet on every view.
 
+    With subject masks (``inputs.mask_dir``), they are warped into the
+    workspace first so each view's depth range covers the subject only (see
+    ``views.build_views``), whether or not fusion masks are requested.
+
     Parameters
     ----------
     inputs : MvsInputs
@@ -43,7 +49,8 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
     Returns
     -------
     dict
-        Inference stats (checkpoint digest, input size, counts, timing).
+        Inference stats (checkpoint digest, input size, counts, timing) and
+        ``depth_range_sources``, the number of views per depth-range source.
 
     Raises
     ------
@@ -52,8 +59,18 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
     """
     cfg = configs["transmvsnet"]
     undistort_workspace(inputs)
+    view_mask_dir = None
+    if inputs.mask_dir is not None:
+        view_mask_dir, _ = undistort_masks_safe(
+            mask_path=inputs.mask_dir,
+            original_sparse_path=inputs.sparse_model_path,
+            mvs_path=inputs.mvs_dir,
+            output_dir_name="view_masks",
+        )
     views = build_views(
-        pycolmap.Reconstruction(inputs.mvs_dir / "sparse"), cfg["views"]
+        pycolmap.Reconstruction(inputs.mvs_dir / "sparse"),
+        cfg["views"],
+        mask_dir=view_mask_dir,
     )
     if not views:
         raise RuntimeError("No view usable for TransMVSNet (see warnings above).")
@@ -63,7 +80,9 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
         # Fusion reads every npz present; a previous run's views must not mix in.
         logger.warning("Removing stale TransMVSNet depth maps '%s'", out)
         shutil.rmtree(out)
-    return run_inference(inputs.mvs_dir, views, cfg, out, select_device(inputs))
+    stats = run_inference(inputs.mvs_dir, views, cfg, out, select_device(inputs))
+    stats["depth_range_sources"] = dict(Counter(v.depth_range_source for v in views))
+    return stats
 
 
 def fuse(inputs: MvsInputs, configs: dict, fusion_mask_dir: Path | None) -> dict:

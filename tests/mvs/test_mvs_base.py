@@ -133,7 +133,7 @@ def test_run_mvs_transmvsnet_wiring(tmp_path):
     stale.parent.mkdir(parents=True)
     stale.touch()
     cfg = {"views": {"num_src": 10}, "fusion": {"min_confidence": 0.03}}
-    views = [MagicMock()]
+    views = [MagicMock(depth_range_source="all_points")]
 
     with (
         patch.object(backend, "undistort_workspace") as mock_undistort,
@@ -150,6 +150,7 @@ def test_run_mvs_transmvsnet_wiring(tmp_path):
 
     mock_undistort.assert_called_once_with(inputs)
     assert mock_views.call_args.args[1] == {"num_src": 10}
+    assert mock_views.call_args.kwargs["mask_dir"] is None  # no masks given
     assert not stale.exists()  # previous run's depth maps never mix in
     infer_args = mock_infer.call_args.args
     assert infer_args[0] == inputs.mvs_dir
@@ -160,9 +161,47 @@ def test_run_mvs_transmvsnet_wiring(tmp_path):
     assert fuse_kwargs["fusion_cfg"] == {"min_confidence": 0.03}
     assert fuse_kwargs["output_ply"] == inputs.dense_ply
     assert result.stats == {
-        "depth": {"depth_maps": 1},
+        "depth": {"depth_maps": 1, "depth_range_sources": {"all_points": 1}},
         "fusion": {"points": 7},
         "fusion_masks": None,
+    }
+
+
+def test_transmvsnet_depth_ranges_use_warped_subject_masks(tmp_path):
+    pytest.importorskip("torch")
+    pytest.importorskip("einops")
+    from learned_sfm_mvs.mvs.transmvsnet import backend
+
+    inputs = _inputs(tmp_path, mask_dir=tmp_path / "masks", device="cpu")
+    warped = inputs.mvs_dir / "view_masks"
+    views = [
+        MagicMock(depth_range_source="subject_observed"),
+        MagicMock(depth_range_source="subject_projected"),
+        MagicMock(depth_range_source="subject_observed"),
+    ]
+
+    with (
+        patch.object(backend, "undistort_workspace"),
+        patch.object(backend.pycolmap, "Reconstruction"),
+        patch.object(
+            backend, "undistort_masks_safe", return_value=(warped, {})
+        ) as mock_warp,
+        patch.object(backend, "build_views", return_value=views) as mock_views,
+        patch.object(backend, "run_inference", return_value={"depth_maps": 3}),
+    ):
+        stats = backend.estimate_depths(inputs, {"transmvsnet": {"views": {}}})
+
+    # Warped into their own directory: fusion masks stay opt-in.
+    assert mock_warp.call_args.kwargs == {
+        "mask_path": tmp_path / "masks",
+        "original_sparse_path": inputs.sparse_model_path,
+        "mvs_path": inputs.mvs_dir,
+        "output_dir_name": "view_masks",
+    }
+    assert mock_views.call_args.kwargs["mask_dir"] == warped
+    assert stats["depth_range_sources"] == {
+        "subject_observed": 2,
+        "subject_projected": 1,
     }
 
 

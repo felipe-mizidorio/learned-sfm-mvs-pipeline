@@ -39,7 +39,7 @@ The backends come from `configs/pipeline.yaml` (hloc + TransMVSNet) unless overr
 | `--hloc-config` / `--transmvsnet-config` | `configs/*.yaml` | Learned-backend settings |
 | `--per-image-cameras` | off | One camera per image, for image sets from several cameras. Same-device captures should share one: COLMAP skips images whose size differs from a shared camera, and the run stops if it does. |
 | `--device` | `auto` | `cpu` forces COLMAP stages and TransMVSNet onto the CPU |
-| `--no-feature-masks` | off | Run SfM on whole frames, ignoring the manifest masks. For low-texture subjects (plain white head) whose masked region has too few features to register the cameras. The masks still reach MVS: add `--fusion-masks` to keep the dense cloud on the subject. |
+| `--no-feature-masks` | off | Run SfM on whole frames, ignoring the manifest masks. For low-texture subjects (plain white head) whose masked region has too few features to register the cameras. The masks still reach MVS: TransMVSNet always takes each view's depth search range from the subject's sparse points, and `--fusion-masks` keeps the dense cloud on the subject. |
 
 All other flags (camera calibration, frames manifest, head crop, bbox, fusion masks, membrane filter, `--allow-unscaled`, evaluation) behave as in [sfm-mvs-pipeline](https://github.com/felipe-mizidorio/sfm-mvs-pipeline); see `sfm-mvs-run --help`. `--camera-params` accepts comma- or space-separated values.
 
@@ -50,7 +50,7 @@ Resuming an existing output directory:
 
 Both refuse to run when `dense.ply` was already scaled to millimetres by a previous `sfm-mvs-resume-mvs`, which would scale it twice.
 
-`pipeline_manifest.json` records, besides the scale status and per-stage counts: the backends and their stats (image pairs, masks, TransMVSNet checkpoint SHA-256, network input size, fused points), per-stage wall time and torch peak VRAM, and torch/CUDA/GPU/hloc versions.
+`pipeline_manifest.json` records, besides the scale status and per-stage counts: the backends and their stats (image pairs, masks, TransMVSNet checkpoint SHA-256, network input size, depth-range source per view, fused points), per-stage wall time and torch peak VRAM, and torch/CUDA/GPU/hloc versions.
 
 ## Development
 
