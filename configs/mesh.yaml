@@ -33,3 +33,15 @@ point_cloud_filtering:
   nb_neighbors: 20
   # remove points whose mean neighbour distance exceeds mean + std_ratio * std_dev
   std_ratio: 2.0
+
+silhouette_crop:
+  # Markerless head crop, used when no ArUco markers are triangulated and the
+  # frames manifest has masks (an explicit --head-radius takes precedence).
+  # A point is kept when it projects inside the subject mask in at least
+  # min_inside_fraction of the masked views that have it in frame, and at
+  # least min_views such views exist: a subject point lies inside the
+  # silhouette in every view, occluded or not; background points do not.
+  # Full-frame (fallback) and missing masks do not vote.
+  min_views: 5
+  # Below 1.0 to tolerate mask errors at the silhouette edge.
+  min_inside_fraction: 0.8

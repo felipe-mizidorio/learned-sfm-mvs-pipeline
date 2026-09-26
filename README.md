@@ -43,6 +43,8 @@ The backends come from `configs/pipeline.yaml` (hloc + TransMVSNet) unless overr
 
 All other flags (camera calibration, frames manifest, head crop, bbox, fusion masks, membrane filter, `--allow-unscaled`, evaluation) behave as in [sfm-mvs-pipeline](https://github.com/felipe-mizidorio/sfm-mvs-pipeline); see `sfm-mvs-run --help`. `--camera-params` accepts comma- or space-separated values.
 
+Head crop: with ArUco markers, a sphere sized from the markers (as before). Without markers (markerless captures), the frames-manifest masks carve the dense cloud instead: a point is kept when it lies inside the subject mask in most masked views that see it (`configs/mesh.yaml` → `silhouette_crop`). `--head-radius` overrides both.
+
 Resuming an existing output directory:
 
 - `sfm-mvs-resume-mvs` re-fuses the existing depth maps and re-runs everything after fusion. It uses the MVS backend recorded in `pipeline_manifest.json` (override with `--mvs-backend`), so TransMVSNet depth maps can be re-fused with other thresholds in `transmvsnet.yaml` without re-running the network.
