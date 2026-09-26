@@ -48,9 +48,6 @@ class PostFusionOptions:
 
     Parameters
     ----------
-    head_radius : float or None, optional
-        Debug override of the crop radius in SfM units; ``<= 0`` disables the
-        crop. None derives it from the ArUco markers.
     membrane_filter : bool, optional
         Remove pale membrane points before Poisson (scene-dependent, opt-in).
     membrane_pale_threshold : float, optional
@@ -64,7 +61,6 @@ class PostFusionOptions:
         is why the resume entry points guard against scaling it twice.
     """
 
-    head_radius: float | None = None
     membrane_filter: bool = False
     membrane_pale_threshold: float = DEFAULT_PALE_THRESHOLD
     membrane_marker_margin_mm: float = DEFAULT_MARKER_MARGIN_MM
@@ -182,7 +178,6 @@ def run_post_fusion(
         dense_filtered_ply,
         output_dir,
         reconstruction,
-        head_radius_override=options.head_radius,
         scale_factor=scale_factor,
         marker_points=marker_points,
         mask_dir=mask_dir,

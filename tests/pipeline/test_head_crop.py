@@ -245,22 +245,6 @@ def test_crop_to_sphere_keeps_inside_points():
 # ---------------------------------------------------------------------------
 
 
-def test_run_head_crop_zero_radius_disables_crop(tmp_path):
-    rng = np.random.default_rng(1)
-    ply = tmp_path / "dense_filtered.ply"
-    _write_cloud(_make_head_points(rng, n=500), ply)
-    result_ply, stats = run_head_crop(
-        ply,
-        tmp_path,
-        _make_camera_ring_reconstruction(),
-        head_radius_override=0.0,
-        scale_factor=SCALE_MM_PER_UNIT,
-        marker_points=_make_marker_corner_points(rng),
-    )
-    assert result_ply == ply
-    assert stats == {}
-
-
 def test_run_head_crop_falls_back_without_scale(tmp_path):
     rng = np.random.default_rng(2)
     ply = tmp_path / "dense_filtered.ply"
@@ -269,7 +253,6 @@ def test_run_head_crop_falls_back_without_scale(tmp_path):
         ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=None,
         marker_points=None,
     )
@@ -294,7 +277,6 @@ def test_run_head_crop_center_is_marker_centroid(tmp_path):
         ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=markers,
     )
@@ -314,7 +296,6 @@ def test_run_head_crop_center_fallback_below_corner_threshold(tmp_path):
         ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=markers,
     )
@@ -337,7 +318,6 @@ def test_run_head_crop_records_clamp_sentinel(tmp_path):
         ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=markers,
     )
@@ -358,27 +338,10 @@ def test_run_head_crop_clean_run_does_not_trip_sentinel(tmp_path):
         ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=_make_marker_corner_points(rng),
     )
     assert stats["head_crop"]["radius_clamped"] is False
-
-
-def test_run_head_crop_override_wins_over_auto(tmp_path):
-    rng = np.random.default_rng(3)
-    ply = tmp_path / "dense_filtered.ply"
-    _write_cloud(_make_head_points(rng, n=500), ply)
-    _, stats = run_head_crop(
-        ply,
-        tmp_path,
-        _make_camera_ring_reconstruction(),
-        head_radius_override=2.0,
-        scale_factor=SCALE_MM_PER_UNIT,
-        marker_points=_make_marker_corner_points(rng),
-    )
-    assert stats["head_crop"]["radius_source"] == "override"
-    assert stats["head_crop"]["radius_sfm_units"] == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +369,6 @@ def _silhouette_crop(tmp_path, keep, **kwargs):
             tmp_path,
             reconstruction,
             **{
-                "head_radius_override": None,
                 "scale_factor": None,
                 "marker_points": None,
                 "mask_dir": tmp_path / "masks",
@@ -433,25 +395,28 @@ def test_run_head_crop_uses_masks_without_markers(tmp_path):
     assert stats["head_crop"]["points_after"] == 300
 
 
-def test_run_head_crop_markers_win_over_masks(tmp_path):
+def test_run_head_crop_masks_win_over_markers(tmp_path):
+    keep = np.zeros(500, dtype=bool)
+    keep[:300] = True
     markers = _make_marker_corner_points(np.random.default_rng(8))
+
     (_, stats), mock_keep, _ = _silhouette_crop(
-        tmp_path,
-        np.ones(500, dtype=bool),
-        scale_factor=SCALE_MM_PER_UNIT,
-        marker_points=markers,
+        tmp_path, keep, scale_factor=SCALE_MM_PER_UNIT, marker_points=markers
     )
-    mock_keep.assert_not_called()
+
+    mock_keep.assert_called_once()
+    assert stats["head_crop"]["method"] == "silhouette"
+
+
+def test_run_head_crop_markers_size_the_sphere_without_usable_masks(tmp_path):
+    markers = _make_marker_corner_points(np.random.default_rng(9))
+    (_, stats), mock_keep, _ = _silhouette_crop(
+        tmp_path, None, scale_factor=SCALE_MM_PER_UNIT, marker_points=markers
+    )
+    mock_keep.assert_called_once()
     assert stats["head_crop"]["method"] == "sphere"
     assert stats["head_crop"]["radius_source"] == "aruco_auto"
-
-
-def test_run_head_crop_override_wins_over_masks(tmp_path):
-    (_, stats), mock_keep, _ = _silhouette_crop(
-        tmp_path, np.ones(500, dtype=bool), head_radius_override=2.0
-    )
-    mock_keep.assert_not_called()
-    assert stats["head_crop"]["radius_source"] == "override"
+    assert stats["head_crop"]["center_source"] == "aruco_centroid"
 
 
 @pytest.mark.parametrize("keep", [None, np.zeros(500, dtype=bool)])
@@ -490,7 +455,6 @@ def test_domestic_background_removed_end_to_end(scenario, tmp_path):
         dense_filtered_ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=markers,
     )
@@ -593,7 +557,6 @@ def test_contiguous_blanket_limitation(tmp_path):
         dense_filtered_ply,
         tmp_path,
         _make_camera_ring_reconstruction(),
-        head_radius_override=None,
         scale_factor=SCALE_MM_PER_UNIT,
         marker_points=_make_marker_corner_points(rng),
     )

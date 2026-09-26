@@ -136,17 +136,6 @@ def _parse_args() -> argparse.Namespace:
             '"marker_detections" ({frame: [{id, corners}]}) for scale recovery.'
         ),
     )
-    # --- Head crop (debug override only) ---
-    parser.add_argument(
-        "--head-radius",
-        type=float,
-        default=None,
-        help="DEBUG override for the spherical head-crop radius, in SfM units. "
-        "Not needed in normal use: the radius is auto-derived from the "
-        "triangulated ArUco markers and marker_length_mm; without markers the "
-        "crop uses the frames-manifest masks (silhouette crop, configs/mesh.yaml). "
-        "0 disables the crop.",
-    )
     # --- Bounding-box clipping (G4) ---
     parser.add_argument(
         "--bbox-min",
@@ -353,7 +342,6 @@ def main() -> None:
                 mesh_cfg,
                 manifest_detections,
                 PostFusionOptions(
-                    head_radius=args.head_radius,
                     membrane_filter=args.membrane_filter,
                     membrane_pale_threshold=args.membrane_pale_threshold,
                     membrane_marker_margin_mm=args.membrane_marker_margin_mm,
