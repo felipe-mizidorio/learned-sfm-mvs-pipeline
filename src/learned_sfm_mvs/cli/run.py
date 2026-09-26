@@ -143,7 +143,9 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="DEBUG override for the spherical head-crop radius, in SfM units. "
         "Not needed in normal use: the radius is auto-derived from the "
-        "triangulated ArUco markers and marker_length_mm. 0 disables the crop.",
+        "triangulated ArUco markers and marker_length_mm; without markers the "
+        "crop uses the frames-manifest masks (silhouette crop, configs/mesh.yaml). "
+        "0 disables the crop.",
     )
     # --- Bounding-box clipping (G4) ---
     parser.add_argument(
@@ -357,6 +359,7 @@ def main() -> None:
                     membrane_marker_margin_mm=args.membrane_marker_margin_mm,
                     allow_unscaled=args.allow_unscaled,
                 ),
+                mask_dir=mask_path,
             )
     except UnscaledOutputError as exc:
         logger.error("%s", exc)

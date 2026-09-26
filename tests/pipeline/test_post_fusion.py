@@ -64,7 +64,7 @@ def _markers() -> tuple[np.ndarray, dict]:
     return points, corners_by_marker
 
 
-def _run(tmp_path, scale, **options):
+def _run(tmp_path, scale, mesh_cfg=MESH_CFG, mask_dir=None, **options):
     dense = tmp_path / "dense.ply"
     _write_dense(dense)
     points, corners = _markers()
@@ -79,9 +79,10 @@ def _run(tmp_path, scale, **options):
             MagicMock(),
             tmp_path,
             ARUCO_CFG,
-            MESH_CFG,
+            mesh_cfg,
             None,
             PostFusionOptions(**options),
+            mask_dir=mask_dir,
         )
 
 
@@ -157,3 +158,22 @@ def test_head_radius_zero_disables_crop(tmp_path):
 
     assert "head_crop" not in result.sor_stats
     assert not (tmp_path / "dense_filtered_cropped.ply").exists()
+
+
+def test_masks_and_silhouette_config_reach_the_head_crop(tmp_path):
+    silhouette = {"min_views": 5, "min_inside_fraction": 0.8}
+    with patch(
+        "learned_sfm_mvs.pipeline.post_fusion.run_head_crop",
+        side_effect=lambda ply, *args, **kwargs: (ply, {}),
+    ) as mock_crop:
+        _run(
+            tmp_path,
+            None,
+            mesh_cfg={**MESH_CFG, "silhouette_crop": silhouette},
+            mask_dir=tmp_path / "masks",
+            allow_unscaled=True,
+        )
+
+    kwargs = mock_crop.call_args.kwargs
+    assert kwargs["mask_dir"] == tmp_path / "masks"
+    assert kwargs["silhouette_cfg"] == silhouette

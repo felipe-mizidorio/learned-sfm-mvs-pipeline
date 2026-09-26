@@ -88,7 +88,9 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="DEBUG override for the spherical head-crop radius, in SfM units. "
         "Not needed in normal use: the radius is auto-derived from the "
-        "triangulated ArUco markers and marker_length_mm. 0 disables the crop.",
+        "triangulated ArUco markers and marker_length_mm; without markers the "
+        "crop uses the frames-manifest masks (silhouette crop, configs/mesh.yaml). "
+        "0 disables the crop.",
     )
     parser.add_argument(
         "--skip-fusion",
@@ -172,8 +174,21 @@ def main() -> None:
         manifest_detections = manifest_data.get("marker_detections")
 
     # Masks live next to the frames the manifest describes, exactly as in
-    # run_pipeline.py: <image-dir>/<manifest mask_dir>.
+    # run_pipeline.py: <image-dir>/<manifest mask_dir>. They always feed the
+    # markerless silhouette crop; fusion masking stays opt-in.
     mask_path: Path | None = None
+    if manifest_data is not None and manifest_data.get("mask_dir"):
+        candidate = args.image_dir / manifest_data["mask_dir"]
+        if candidate.is_dir():
+            mask_path = candidate
+            logger.info("Using mask directory: '%s'", mask_path)
+        elif args.fusion_masks:
+            logger.error("Mask directory '%s' does not exist. Aborting.", candidate)
+            sys.exit(1)
+        else:
+            logger.warning(
+                "Manifest mask_dir '%s' does not exist — ignoring masks.", candidate
+            )
     if args.fusion_masks:
         if manifest_data is None:
             logger.error("--fusion-masks requires --frames-manifest. Aborting.")
@@ -184,12 +199,6 @@ def main() -> None:
                 args.frames_manifest,
             )
             sys.exit(1)
-        candidate = args.image_dir / manifest_data["mask_dir"]
-        if not candidate.is_dir():
-            logger.error("Mask directory '%s' does not exist. Aborting.", candidate)
-            sys.exit(1)
-        mask_path = candidate
-        logger.info("Using mask directory: '%s'", mask_path)
 
     reconstruction, best_sparse = load_best_reconstruction(sparse_dir)
     logger.info(
@@ -218,7 +227,7 @@ def main() -> None:
                     image_dir=args.image_dir,
                     output_dir=output_dir,
                     mask_dir=mask_path,
-                    fusion_masks=mask_path is not None,
+                    fusion_masks=args.fusion_masks,
                     bbox_min=args.bbox_min,
                     bbox_max=args.bbox_max,
                     device=args.device,
@@ -249,6 +258,7 @@ def main() -> None:
                     # resume-mvs has always scaled dense.ply in place (guarded above).
                     scale_dense_ply=True,
                 ),
+                mask_dir=mask_path,
             )
     except UnscaledOutputError as exc:
         logger.error("%s", exc)

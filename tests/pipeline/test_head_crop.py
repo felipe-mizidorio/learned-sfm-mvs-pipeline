@@ -12,7 +12,7 @@ Head = sphere of radius 0.6 units (60 mm ≈ neonatal head) at the origin.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import open3d as o3d
@@ -379,6 +379,87 @@ def test_run_head_crop_override_wins_over_auto(tmp_path):
     )
     assert stats["head_crop"]["radius_source"] == "override"
     assert stats["head_crop"]["radius_sfm_units"] == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# Markerless: silhouette crop from the frames-manifest masks
+# ---------------------------------------------------------------------------
+
+SILHOUETTE_CFG = {"min_views": 5, "min_inside_fraction": 0.8}
+
+
+def _silhouette_crop(tmp_path, keep, **kwargs):
+    """run_head_crop on 500 head points with silhouette_keep stubbed."""
+    rng = np.random.default_rng(7)
+    ply = tmp_path / "dense_filtered.ply"
+    _write_cloud(_make_head_points(rng, n=500), ply)
+    stats = {"method": "silhouette", "views_used": 16, "points_before": 500}
+    if keep is not None:
+        stats["points_after"] = int(np.sum(keep))
+    reconstruction = _make_camera_ring_reconstruction()
+    with patch(
+        "learned_sfm_mvs.pipeline.orchestration.silhouette_keep",
+        return_value=(keep, stats),
+    ) as mock_keep:
+        result = run_head_crop(
+            ply,
+            tmp_path,
+            reconstruction,
+            **{
+                "head_radius_override": None,
+                "scale_factor": None,
+                "marker_points": None,
+                "mask_dir": tmp_path / "masks",
+                "silhouette_cfg": SILHOUETTE_CFG,
+                **kwargs,
+            },
+        )
+    return result, mock_keep, reconstruction
+
+
+def test_run_head_crop_uses_masks_without_markers(tmp_path):
+    keep = np.zeros(500, dtype=bool)
+    keep[:300] = True
+
+    (result_ply, stats), mock_keep, reconstruction = _silhouette_crop(tmp_path, keep)
+
+    points, recon, mask_dir, min_views, fraction = mock_keep.call_args.args
+    assert points.shape == (500, 3)
+    assert recon is reconstruction
+    assert (mask_dir, min_views, fraction) == (tmp_path / "masks", 5, 0.8)
+    assert result_ply == tmp_path / "dense_filtered_cropped.ply"
+    assert len(o3d.io.read_point_cloud(str(result_ply)).points) == 300
+    assert stats["head_crop"]["method"] == "silhouette"
+    assert stats["head_crop"]["points_after"] == 300
+
+
+def test_run_head_crop_markers_win_over_masks(tmp_path):
+    markers = _make_marker_corner_points(np.random.default_rng(8))
+    (_, stats), mock_keep, _ = _silhouette_crop(
+        tmp_path,
+        np.ones(500, dtype=bool),
+        scale_factor=SCALE_MM_PER_UNIT,
+        marker_points=markers,
+    )
+    mock_keep.assert_not_called()
+    assert stats["head_crop"]["method"] == "sphere"
+    assert stats["head_crop"]["radius_source"] == "aruco_auto"
+
+
+def test_run_head_crop_override_wins_over_masks(tmp_path):
+    (_, stats), mock_keep, _ = _silhouette_crop(
+        tmp_path, np.ones(500, dtype=bool), head_radius_override=2.0
+    )
+    mock_keep.assert_not_called()
+    assert stats["head_crop"]["radius_source"] == "override"
+
+
+@pytest.mark.parametrize("keep", [None, np.zeros(500, dtype=bool)])
+def test_run_head_crop_without_usable_masks_falls_back_to_sphere(tmp_path, keep):
+    (_, stats), mock_keep, _ = _silhouette_crop(tmp_path, keep)
+    mock_keep.assert_called_once()
+    assert stats["head_crop"]["method"] == "sphere"
+    assert stats["head_crop"]["radius_source"] == "default_fallback"
 
 
 # ---------------------------------------------------------------------------

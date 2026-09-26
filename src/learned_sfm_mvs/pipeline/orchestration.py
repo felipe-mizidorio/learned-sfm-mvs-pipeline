@@ -25,6 +25,7 @@ from learned_sfm_mvs.mesh.surface_reconstruction import (
 )
 from learned_sfm_mvs.postprocess.membrane_filter import filter_membrane_points
 from learned_sfm_mvs.postprocess.point_cloud_filter import filter_point_cloud
+from learned_sfm_mvs.postprocess.silhouette_filter import silhouette_keep
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,38 @@ def auto_head_radius(
     return radius, clamp_info
 
 
+def _silhouette_crop(
+    dense_filtered_ply: Path,
+    output_dir: Path,
+    reconstruction: pycolmap.Reconstruction,
+    mask_dir: Path,
+    cfg: dict,
+) -> tuple[Path, dict] | None:
+    """Markerless crop by silhouette votes; None when it is unusable."""
+    logger.info(
+        "=== Post-fusion silhouette crop (markerless, masks '%s') ===", mask_dir
+    )
+    pcd = o3d.io.read_point_cloud(str(dense_filtered_ply))
+    keep, stats = silhouette_keep(
+        np.asarray(pcd.points),
+        reconstruction,
+        mask_dir,
+        int(cfg["min_views"]),
+        float(cfg["min_inside_fraction"]),
+    )
+    if keep is None or not keep.any():
+        return None
+    cropped = pcd.select_by_index(np.flatnonzero(keep).tolist())
+    cropped_ply = output_dir / "dense_filtered_cropped.ply"
+    o3d.io.write_point_cloud(str(cropped_ply), cropped)
+    logger.info(
+        "Cropped dense cloud: %d points, saved to '%s'",
+        len(cropped.points),
+        cropped_ply,
+    )
+    return cropped_ply, {"head_crop": stats}
+
+
 def run_head_crop(
     dense_filtered_ply: Path,
     output_dir: Path,
@@ -195,8 +228,16 @@ def run_head_crop(
     head_radius_override: float | None,
     scale_factor: float | None,
     marker_points: np.ndarray | None,
+    mask_dir: Path | None = None,
+    silhouette_cfg: dict | None = None,
 ) -> tuple[Path, dict]:
-    """Spherical crop of the SOR-filtered cloud to the head region.
+    """Crop the SOR-filtered cloud to the head region.
+
+    Method: explicit radius override (debug) or ArUco markers → spherical
+    crop; else, with subject masks, the markerless silhouette crop (see
+    ``postprocess.silhouette_filter``); else a spherical crop of
+    DEFAULT_HEAD_RADIUS_SFM, which is also the fallback when no mask is
+    usable.
 
     Centre selection: centroid of the triangulated ArUco corners when at least
     HEAD_CROP_MIN_MARKER_CORNERS are available, else the least-squares
@@ -224,6 +265,11 @@ def run_head_crop(
         Recovered mm/SfM-unit factor.
     marker_points : np.ndarray or None
         ``(N, 3)`` triangulated marker corners in SfM units.
+    mask_dir : Path or None, optional
+        Original-frame subject masks for the markerless silhouette crop.
+    silhouette_cfg : dict or None, optional
+        ``silhouette_crop`` section of ``configs/mesh.yaml``; None disables
+        the silhouette crop.
 
     Returns
     -------
@@ -237,7 +283,23 @@ def run_head_crop(
         logger.info("Head crop disabled (--head-radius %s).", head_radius_override)
         return dense_filtered_ply, {}
 
-    if marker_points is not None and len(marker_points) >= HEAD_CROP_MIN_MARKER_CORNERS:
+    has_markers = (
+        marker_points is not None and len(marker_points) >= HEAD_CROP_MIN_MARKER_CORNERS
+    )
+    if (
+        head_radius_override is None
+        and not has_markers
+        and mask_dir is not None
+        and silhouette_cfg
+    ):
+        cropped = _silhouette_crop(
+            dense_filtered_ply, output_dir, reconstruction, mask_dir, silhouette_cfg
+        )
+        if cropped is not None:
+            return cropped
+        logger.warning("Silhouette crop unusable; falling back to the spherical crop.")
+
+    if has_markers and marker_points is not None:
         head_center = np.asarray(marker_points).mean(axis=0)
         center_source = "aruco_centroid"
         logger.info(
@@ -301,6 +363,7 @@ def run_head_crop(
 
     crop_stats = {
         "head_crop": {
+            "method": "sphere",
             "radius_sfm_units": radius,
             "radius_source": radius_source,
             **clamp_info,

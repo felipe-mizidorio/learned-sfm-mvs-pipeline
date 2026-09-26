@@ -115,6 +115,7 @@ def run_post_fusion(
     mesh_cfg: dict,
     detections: dict | None,
     options: PostFusionOptions,
+    mask_dir: Path | None = None,
 ) -> PostFusionResult:
     """Turn a fused dense cloud into a metric, cropped, meshed result.
 
@@ -136,6 +137,10 @@ def run_post_fusion(
         Pre-computed marker detections from the frames manifest.
     options : PostFusionOptions
         Run options.
+    mask_dir : Path or None, optional
+        Original-frame subject masks from the frames manifest; without
+        markers they drive the silhouette head crop (``configs/mesh.yaml ->
+        silhouette_crop``).
 
     Returns
     -------
@@ -180,6 +185,8 @@ def run_post_fusion(
         head_radius_override=options.head_radius,
         scale_factor=scale_factor,
         marker_points=marker_points,
+        mask_dir=mask_dir,
+        silhouette_cfg=mesh_cfg.get("silhouette_crop"),
     )
     sor_stats.update(crop_stats)
 

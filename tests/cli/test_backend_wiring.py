@@ -201,6 +201,9 @@ def test_run_no_feature_masks_keeps_masks_for_fusion(tmp_path):
         "enabled": False,
         "source_mask_dir": None,
     }
+    # The markerless silhouette crop always gets the manifest masks.
+    post_kwargs = stages.run_post_fusion.call_args.kwargs
+    assert post_kwargs["mask_dir"] == tmp_path / "images" / "masks"
 
 
 def test_run_sfm_failure_exits_nonzero(tmp_path):
@@ -236,12 +239,36 @@ def _resume(tmp_path, previous_manifest, extra=()):
             return_value=(MagicMock(), out / "sparse" / "0"),
         ),
         patch.object(resume_mvs, "fuse", return_value=fused) as mock_fuse,
-        patch.object(resume_mvs, "run_post_fusion", return_value=_post(tmp_path)),
+        patch.object(
+            resume_mvs, "run_post_fusion", return_value=_post(tmp_path)
+        ) as mock_post,
     ):
         _main(
             resume_mvs, ["--output-dir", str(out), "--image-dir", str(tmp_path), *extra]
         )
-    return mock_fuse, _manifest(tmp_path)
+    return mock_fuse, _manifest(tmp_path), mock_post
+
+
+def test_resume_passes_manifest_masks_to_crop_without_fusion_masks(tmp_path):
+    (tmp_path / "masks").mkdir()
+    frames = tmp_path / "frames.json"
+    frames.write_text(json.dumps({"frames": [], "mask_dir": "masks"}))
+
+    mock_fuse, _, mock_post = _resume(
+        tmp_path, None, ["--frames-manifest", str(frames)]
+    )
+
+    mvs_inputs = mock_fuse.call_args.args[1]
+    assert mvs_inputs.mask_dir == tmp_path / "masks"
+    assert mvs_inputs.fusion_masks is False  # fusion masking stays opt-in
+    assert mock_post.call_args.kwargs["mask_dir"] == tmp_path / "masks"
+
+
+def test_resume_fusion_masks_still_require_a_manifest_mask_dir(tmp_path):
+    frames = tmp_path / "frames.json"
+    frames.write_text(json.dumps({"frames": []}))
+    with pytest.raises(SystemExit):
+        _resume(tmp_path, None, ["--frames-manifest", str(frames), "--fusion-masks"])
 
 
 def test_resume_refuses_previous_runs_backend(tmp_path):
@@ -250,7 +277,7 @@ def test_resume_refuses_previous_runs_backend(tmp_path):
         "backends": {"mvs": {"name": "patchmatch"}},
     }
 
-    mock_fuse, manifest = _resume(tmp_path, previous)
+    mock_fuse, manifest, _ = _resume(tmp_path, previous)
 
     assert mock_fuse.call_args.args[0] == "patchmatch"
     assert manifest["backends"]["mvs"] == {
@@ -261,13 +288,13 @@ def test_resume_refuses_previous_runs_backend(tmp_path):
 
 
 def test_resume_without_manifest_uses_pipeline_yaml(tmp_path):
-    mock_fuse, _ = _resume(tmp_path, None)
+    mock_fuse, _, _ = _resume(tmp_path, None)
     assert mock_fuse.call_args.args[0] == "transmvsnet"
 
 
 def test_resume_flag_overrides_previous_backend(tmp_path):
     previous = {"backends": {"mvs": {"name": "patchmatch"}}}
-    mock_fuse, _ = _resume(tmp_path, previous, ["--mvs-backend", "transmvsnet"])
+    mock_fuse, _, _ = _resume(tmp_path, previous, ["--mvs-backend", "transmvsnet"])
     assert mock_fuse.call_args.args[0] == "transmvsnet"
 
 
@@ -277,7 +304,7 @@ def test_resume_skip_fusion_still_records_backend(tmp_path):
         "backends": {"mvs": {"name": "patchmatch"}},
     }
 
-    mock_fuse, manifest = _resume(tmp_path, previous, ["--skip-fusion"])
+    mock_fuse, manifest, _ = _resume(tmp_path, previous, ["--skip-fusion"])
 
     mock_fuse.assert_not_called()
     # The next resume must still find which backend produced mvs/.
