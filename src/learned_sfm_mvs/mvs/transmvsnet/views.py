@@ -16,6 +16,7 @@ of depth hypotheses over the room, leaving few on the subject.
 """
 
 import logging
+import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -301,16 +302,7 @@ def build_views(
         for p in point_ids
     ]
 
-    scores = view_selection_scores(
-        centers, points, tracks, cfg["theta0"], cfg["sigma1"], cfg["sigma2"]
-    )
-    sources = top_source_views(scores, int(cfg["num_src"]))
-
-    observed: list[list[int]] = [[] for _ in images]
-    for point_idx, track in enumerate(tracks):
-        for view_idx in np.unique(track):
-            observed[view_idx].append(point_idx)
-
+    LAST_DIAG_STATS.clear()
     is_subject = None
     if mask_dir is not None:
         subject_ids = subject_point_ids(images, mask_dir)
@@ -320,6 +312,32 @@ def build_views(
             int(is_subject.sum()),
             len(point_ids),
         )
+
+    # DIAG (diag/markerless): score source views on subject points only.
+    score_idx = np.arange(len(point_ids))
+    if os.environ.get("DIAG_SUBJECT_SOURCE_VIEWS") == "1" and is_subject is not None:
+        score_idx = np.flatnonzero(is_subject)
+        logger.warning(
+            "DIAG_SUBJECT_SOURCE_VIEWS: source views scored on %d subject points.",
+            len(score_idx),
+        )
+    scores = view_selection_scores(
+        centers,
+        points[score_idx],
+        [tracks[k] for k in score_idx],
+        cfg["theta0"],
+        cfg["sigma1"],
+        cfg["sigma2"],
+    )
+    sources = top_source_views(scores, int(cfg["num_src"]))
+
+    observed: list[list[int]] = [[] for _ in images]
+    for point_idx, track in enumerate(tracks):
+        for view_idx in np.unique(track):
+            observed[view_idx].append(point_idx)
+
+    if is_subject is not None:
+        _log_source_subject_overlap(observed, sources, is_subject)
     min_points = int(cfg["min_points"])
 
     views = []
@@ -391,6 +409,54 @@ def build_views(
         dict(Counter(v.depth_range_source for v in views)),
     )
     return views
+
+
+# DIAG (diag/markerless): last build_views overlap stats, copied into the
+# manifest by backend.estimate_depths.
+LAST_DIAG_STATS: dict = {}
+
+
+def _log_source_subject_overlap(
+    observed: list[list[int]], sources: list[list[int]], is_subject: np.ndarray
+) -> dict:
+    """Subject points each view shares with its source views (diagnostic).
+
+    Parameters
+    ----------
+    observed : list[list[int]]
+        Point indices observed per view.
+    sources : list[list[int]]
+        Source-view indices per view.
+    is_subject : np.ndarray
+        ``(P,)`` bool, subject points.
+
+    Returns
+    -------
+    dict
+        Median shared subject points per (view, source) pair, share of pairs
+        sharing none, and median source views per view.
+    """
+    subject_sets = [{p for p in obs if is_subject[p]} for obs in observed]
+    shared = [
+        len(subject_sets[i] & subject_sets[j])
+        for i, srcs in enumerate(sources)
+        for j in srcs
+    ]
+    stats = {
+        "pairs": len(shared),
+        "median_shared_subject_points": float(np.median(shared)) if shared else 0.0,
+        "fraction_pairs_no_subject_overlap": (
+            float(np.mean(np.array(shared) == 0)) if shared else 1.0
+        ),
+        "median_source_views": float(np.median([len(s) for s in sources]))
+        if sources
+        else 0.0,
+        "subject_source_views": os.environ.get("DIAG_SUBJECT_SOURCE_VIEWS") == "1",
+    }
+    LAST_DIAG_STATS.clear()
+    LAST_DIAG_STATS.update(stats)
+    logger.info("DIAG source-view subject overlap: %s", stats)
+    return stats
 
 
 def _projected_depths(

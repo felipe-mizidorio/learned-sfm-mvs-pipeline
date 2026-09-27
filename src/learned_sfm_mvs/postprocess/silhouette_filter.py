@@ -13,6 +13,7 @@ fallback) do not vote.
 """
 
 import logging
+import os
 from pathlib import Path
 
 import cv2
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 # Masks covering more of the frame are segmentation fallbacks, not a subject.
 FULL_FRAME_FRACTION = 0.99
 _CHUNK = 1_000_000
+# DIAG (diag/markerless): last run's edge-rejected mask.
+LAST_DIAG: dict = {}
 
 
 def _load_mask(mask_dir: Path, name: str, size: tuple[int, int]) -> np.ndarray | None:
@@ -34,7 +37,16 @@ def _load_mask(mask_dir: Path, name: str, size: tuple[int, int]) -> np.ndarray |
     if (mask.shape[1], mask.shape[0]) != size:
         mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
     subject = mask > 0
-    return None if subject.mean() > FULL_FRAME_FRACTION else subject
+    if subject.mean() > FULL_FRAME_FRACTION:
+        return None
+    # DIAG (diag/markerless): grow the mask like the marker path's dilation.
+    dilate_px = int(os.environ.get("DIAG_MASK_DILATE_PX", "0"))
+    if dilate_px > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1)
+        )
+        subject = cv2.dilate(subject.astype(np.uint8), kernel) > 0
+    return subject
 
 
 def silhouette_keep(
@@ -75,6 +87,7 @@ def silhouette_keep(
         raise ValueError(
             f"min_inside_fraction must be in (0, 1], got {min_inside_fraction}"
         )
+    LAST_DIAG.clear()
     in_frame = np.zeros(len(points), dtype=np.int32)
     inside = np.zeros(len(points), dtype=np.int32)
     views_used = 0
@@ -113,6 +126,11 @@ def silhouette_keep(
         return None, stats
     keep = (in_frame >= min_views) & (inside >= min_inside_fraction * in_frame)
     stats["points_after"] = int(keep.sum())
+    # DIAG (diag/markerless): points judged but rejected near the mask edge
+    # (inside half or more of their views), read by the crop caller.
+    LAST_DIAG["edge_rejected"] = (
+        (in_frame >= min_views) & ~keep & (2 * inside >= in_frame)
+    )
     logger.info(
         "Silhouette crop: keeping %d / %d points inside the masks of >= %.0f%% of "
         ">= %d masked views (%d views voted).",

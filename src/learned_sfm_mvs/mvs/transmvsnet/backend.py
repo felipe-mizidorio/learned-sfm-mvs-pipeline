@@ -12,6 +12,7 @@ from learned_sfm_mvs.mvs.base import MvsInputs, undistort_workspace
 from learned_sfm_mvs.mvs.mask_undistortion import undistort_masks_safe
 from learned_sfm_mvs.mvs.transmvsnet.fusion import fuse_depth_maps
 from learned_sfm_mvs.mvs.transmvsnet.inference import run_inference
+from learned_sfm_mvs.mvs.transmvsnet import views as views_module
 from learned_sfm_mvs.mvs.transmvsnet.views import build_views
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,9 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
         shutil.rmtree(out)
     stats = run_inference(inputs.mvs_dir, views, cfg, out, select_device(inputs))
     stats["depth_range_sources"] = dict(Counter(v.depth_range_source for v in views))
+    # DIAG (diag/markerless)
+    if views_module.LAST_DIAG_STATS:
+        stats["diag_source_overlap"] = dict(views_module.LAST_DIAG_STATS)
     return stats
 
 

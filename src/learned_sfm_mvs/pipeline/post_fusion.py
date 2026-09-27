@@ -11,6 +11,7 @@ scale is applied only after meshing so no file is scaled twice.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -151,10 +152,14 @@ def run_post_fusion(
     """
     mesh_ply = output_dir / "mesh.ply"
 
-    logger.info("=== Point cloud filtering (SOR) ===")
-    dense_filtered_ply, sor_stats = run_sor(
-        dense_ply, output_dir, mesh_cfg["point_cloud_filtering"]
-    )
+    # DIAG (diag/markerless): crop the raw cloud first, then SOR on the crop,
+    # so background points do not set the SOR statistics.
+    crop_first = os.environ.get("DIAG_CROP_BEFORE_SOR") == "1"
+    if not crop_first:
+        logger.info("=== Point cloud filtering (SOR) ===")
+        dense_filtered_ply, sor_stats = run_sor(
+            dense_ply, output_dir, mesh_cfg["point_cloud_filtering"]
+        )
 
     marker_length_mm = aruco_cfg.get("marker_length_mm")
     scale_factor, marker_points, corners_by_marker = recover_scale_details_safe(
@@ -175,7 +180,7 @@ def run_post_fusion(
     enforce_scale_policy(scale_status, allow_unscaled=options.allow_unscaled)
 
     cropped_ply, crop_stats = run_head_crop(
-        dense_filtered_ply,
+        dense_ply if crop_first else dense_filtered_ply,
         output_dir,
         reconstruction,
         scale_factor=scale_factor,
@@ -183,13 +188,24 @@ def run_post_fusion(
         mask_dir=mask_dir,
         silhouette_cfg=mesh_cfg.get("silhouette_crop"),
     )
+    if crop_first:
+        logger.warning("DIAG_CROP_BEFORE_SOR: SOR runs on the cropped cloud.")
+        logger.info("=== Point cloud filtering (SOR, after crop) ===")
+        dense_filtered_ply, sor_stats = run_sor(
+            cropped_ply, output_dir, mesh_cfg["point_cloud_filtering"]
+        )
+        sor_stats["diag_crop_before_sor"] = True
+        input_for_poisson = dense_filtered_ply
+        if cropped_ply == dense_ply:
+            # Crop fell back to its input: never rename or scale dense.ply here.
+            cropped_ply = dense_filtered_ply
+    else:
+        input_for_poisson = cropped_ply
     sor_stats.update(crop_stats)
-
-    input_for_poisson = cropped_ply
     membrane_stats: dict | None = None
     if options.membrane_filter:
         input_for_poisson, membrane_stats = run_membrane_filter(
-            cropped_ply,
+            input_for_poisson,
             output_dir,
             marker_corners=corners_by_marker,
             pale_threshold=options.membrane_pale_threshold,

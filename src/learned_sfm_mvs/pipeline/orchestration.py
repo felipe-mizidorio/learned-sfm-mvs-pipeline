@@ -10,6 +10,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import platform
 from pathlib import Path
 
@@ -25,6 +26,9 @@ from learned_sfm_mvs.mesh.surface_reconstruction import (
 )
 from learned_sfm_mvs.postprocess.membrane_filter import filter_membrane_points
 from learned_sfm_mvs.postprocess.point_cloud_filter import filter_point_cloud
+from learned_sfm_mvs.postprocess.silhouette_filter import (
+    LAST_DIAG as LAST_SILHOUETTE_DIAG,
+)
 from learned_sfm_mvs.postprocess.silhouette_filter import silhouette_keep
 
 logger = logging.getLogger(__name__)
@@ -208,6 +212,16 @@ def _silhouette_crop(
         int(cfg["min_views"]),
         float(cfg["min_inside_fraction"]),
     )
+    edge_rejected = LAST_SILHOUETTE_DIAG.get("edge_rejected")
+    if edge_rejected is not None:
+        stats["diag_dilate_px"] = int(os.environ.get("DIAG_MASK_DILATE_PX", "0"))
+        stats["diag_edge_rejected"] = int(edge_rejected.sum())
+    if edge_rejected is not None and edge_rejected.any():
+        # DIAG (diag/markerless): what the vote trims at the silhouette edge.
+        o3d.io.write_point_cloud(
+            str(output_dir / "diag_silhouette_rejected.ply"),
+            pcd.select_by_index(np.flatnonzero(edge_rejected).tolist()),
+        )
     if keep is None or not keep.any():
         return None
     cropped = pcd.select_by_index(np.flatnonzero(keep).tolist())
@@ -515,6 +529,8 @@ def build_provenance(
         "frames_manifest_sha256": manifest_sha256,
         "resolved_configs": resolved_configs,
         "non_determinism_notes": NON_DETERMINISM_NOTES,
+        # DIAG (diag/markerless): which experiment toggles were set.
+        "diag_toggles": {k: v for k, v in os.environ.items() if k.startswith("DIAG_")},
     }
 
 
