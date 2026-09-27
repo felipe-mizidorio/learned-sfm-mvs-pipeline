@@ -5,12 +5,20 @@ Subcommands, all read-only on the run they inspect:
 - ``sparse``: split the sparse model into subject / background point PLYs.
 - ``masks``: mask-over-frame contact sheet and per-frame mask area series.
 - ``summary``: one ``diag_summary.json`` with the numbers of a run.
+- ``imgstats``: image signal inside the subject mask (exposure, contrast,
+  sharpness, SIFT density), markers excluded.
+- ``coverage``: camera viewpoints around the head from the sparse model.
+- ``paintout``: copy of a frames session with the ArUco markers inpainted
+  (writes a new session; the input is untouched).
 
 Usage::
 
     python scripts/diag/diag.py sparse  --run-dir OUT --frames-manifest M.json --image-dir IMGS
     python scripts/diag/diag.py masks   --frames-manifest M.json --image-dir IMGS --out-dir OUT
     python scripts/diag/diag.py summary --run-dir OUT --frames-manifest M.json
+    python scripts/diag/diag.py imgstats --frames-manifest M.json --image-dir IMGS --out-dir OUT
+    python scripts/diag/diag.py coverage --run-dir OUT --frames-manifest M.json --image-dir IMGS
+    python scripts/diag/diag.py paintout --frames-manifest M.json --image-dir IMGS --out-session NEW
 """
 
 import argparse
@@ -575,6 +583,400 @@ def hull_band_normals(run_dir: Path, band: float = 0.05) -> dict:
     return out
 
 
+def _marker_mask(
+    image: np.ndarray,
+    head: np.ndarray,
+    detections: list,
+    dilate_px: int = 12,
+    bright: int = 140,
+) -> np.ndarray:
+    """Pixels covered by ArUco markers (detected or not).
+
+    Detected marker quads, plus every bright blob inside the head (the white
+    paper of undetected or oblique markers), all dilated by ``dilate_px``.
+    Marker-sized blobs (hull at most 5 % of the head) are filled as their
+    convex hull so the black code cells go too; larger blobs (merged
+    highlights) are painted pixel by pixel. Meant for dark subjects only: on
+    a pale subject the whole head is "bright".
+
+    Parameters
+    ----------
+    image : np.ndarray
+        BGR frame.
+    head : np.ndarray
+        Boolean subject mask.
+    detections : list
+        ``[{id, corners}]`` for this frame, as in the frames manifest.
+    dilate_px : int, optional
+        Growth of the final mask, pixels.
+    bright : int, optional
+        Grey level above which a head pixel counts as marker paper.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean marker mask, image-sized.
+    """
+    out = np.zeros(head.shape, np.uint8)
+    for det in detections:
+        quad = np.asarray(det["corners"], np.float32).reshape(-1, 2)
+        cv2.fillConvexPoly(out, quad.astype(np.int32), 1)
+    paper = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) > bright) & head
+    paper = cv2.dilate(paper.astype(np.uint8), np.ones((5, 5), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(paper)
+    max_hull = 0.05 * head.sum()
+    for label in range(1, n):
+        if stats[label, cv2.CC_STAT_AREA] < 30:
+            continue
+        blob = labels == label
+        hull = cv2.convexHull(np.column_stack(np.nonzero(blob)[::-1]).astype(np.int32))
+        if cv2.contourArea(hull) <= max_hull:
+            cv2.fillConvexPoly(out, hull, 1)
+        else:
+            out[blob] = 1
+    size = 2 * dilate_px + 1
+    return cv2.dilate(out, np.ones((size, size), np.uint8)) > 0
+
+
+def _region_stats(
+    image: np.ndarray, gray: np.ndarray, region: np.ndarray, sift: cv2.SIFT
+) -> dict:
+    """Exposure, contrast, sharpness and SIFT density inside ``region``."""
+    g = gray.astype(np.float32)
+    grad = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
+    mean = cv2.blur(g, (7, 7))
+    local_std = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - mean * mean, 0))
+    lap = cv2.Laplacian(g, cv2.CV_32F)
+    px = int(region.sum())
+    keypoints = sift.detect(gray, region.astype(np.uint8) * 255)
+    channel_max = image.max(axis=2)[region]
+    return {
+        "px": px,
+        "mean": float(g[region].mean()),
+        "std": float(g[region].std()),
+        "clipped_frac": float((channel_max >= 250).mean()),
+        "crushed_frac": float((channel_max <= 5).mean()),
+        "grad_median": float(np.median(grad[region])),
+        "local_std_median": float(np.median(local_std[region])),
+        "local_rel_contrast_median": float(
+            np.median(local_std[region] / np.maximum(mean[region], 1.0))
+        ),
+        "laplacian_var": float(lap[region].var()),
+        "sift_per_10k_px": 1e4 * len(keypoints) / max(px, 1),
+    }
+
+
+def image_stats(
+    frames_manifest: Path,
+    image_dir: Path,
+    out_dir: Path,
+    erode_px: int = 15,
+    tiles: int = 6,
+) -> dict:
+    """Image signal on the subject: is the head overexposed, blurred or flat?
+
+    Per frame, inside the subject mask eroded by ``erode_px`` (so the
+    silhouette edge does not count as texture): grey mean/std, clipped and
+    crushed pixel shares, gradient, local contrast (absolute and relative to
+    the local mean), Laplacian variance and SIFT keypoints per 10k pixels.
+    When the manifest has marker detections the same numbers are repeated on
+    ``surface`` = head minus markers (``_marker_mask``). The whole-frame
+    Laplacian variance (what aruco-frame-preprocessing's blur filter scores)
+    is kept for comparison. Writes ``imgstats.csv``, ``imgstats.json`` and
+    ``imgstats_sheet.png`` (head crops, top row as saved, bottom row CLAHE
+    to show latent texture).
+
+    Parameters
+    ----------
+    frames_manifest : Path
+        Frames manifest (``frames``, ``mask_dir``, optional
+        ``marker_detections``).
+    image_dir : Path
+        Frames directory.
+    out_dir : Path
+        Output directory.
+    erode_px : int, optional
+        Mask erosion, pixels.
+    tiles : int, optional
+        Frames in the sheet, evenly spaced.
+
+    Returns
+    -------
+    dict
+        Median / p10 / p90 over frames of every per-frame number.
+    """
+    manifest = json.loads(frames_manifest.read_text())
+    frames = manifest["frames"]
+    mask_dir = image_dir / manifest["mask_dir"]
+    detections = manifest.get("marker_detections") or {}
+    markers = any(detections.values())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sift = cv2.SIFT_create()
+    kernel = np.ones((2 * erode_px + 1, 2 * erode_px + 1), np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+    picks = set(np.linspace(0, len(frames) - 1, tiles).astype(int).tolist())
+
+    rows, crops = [], []
+    for i, name in enumerate(frames):
+        image = cv2.imread(str(image_dir / name))
+        mask = cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE)
+        if image is None or mask is None or (mask > 0).mean() > 0.99:
+            continue
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        head = cv2.erode((mask > 0).astype(np.uint8), kernel) > 0
+        if head.sum() < 1000:
+            continue
+        row = {"frame": name, "mask_frac": float((mask > 0).mean())}
+        row["frame_laplacian_var"] = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        regions = {"head": head}
+        if markers:
+            regions["surface"] = head & ~_marker_mask(
+                image, mask > 0, detections.get(name, [])
+            )
+            row["marker_frac_of_head"] = 1 - regions["surface"].sum() / head.sum()
+        for label, region in regions.items():
+            for key, value in _region_stats(image, gray, region, sift).items():
+                row[f"{label}_{key}"] = value
+        rows.append(row)
+        if i in picks:
+            ys, xs = np.nonzero(mask > 0)
+            crop = image[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+            enhanced = cv2.cvtColor(
+                clahe.apply(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)), cv2.COLOR_GRAY2BGR
+            )
+            scale = 360 / crop.shape[0]
+            size = (max(1, int(crop.shape[1] * scale)), 360)
+            crops.append(
+                np.vstack([cv2.resize(crop, size), cv2.resize(enhanced, size)])
+            )
+
+    keys = [k for k in rows[0] if k != "frame"]
+    with (out_dir / "imgstats.csv").open("w") as f:
+        f.write(",".join(["frame", *keys]) + "\n")
+        f.writelines(
+            ",".join([r["frame"], *(f"{r.get(k, float('nan')):.6g}" for k in keys)])
+            + "\n"
+            for r in rows
+        )
+    summary_out: dict = {"frames": len(rows), "markers_in_manifest": markers}
+    for key in keys:
+        values = np.array([r.get(key, np.nan) for r in rows], dtype=float)
+        summary_out[key] = {
+            "median": float(np.nanmedian(values)),
+            "p10": float(np.nanpercentile(values, 10)),
+            "p90": float(np.nanpercentile(values, 90)),
+        }
+    (out_dir / "imgstats.json").write_text(json.dumps(summary_out, indent=2))
+    if crops:
+        cv2.imwrite(str(out_dir / "imgstats_sheet.png"), np.hstack(crops))
+    print(json.dumps(summary_out, indent=2))
+    return summary_out
+
+
+def _fibonacci_sphere(n: int) -> np.ndarray:
+    """``n`` near-uniform unit vectors."""
+    i = np.arange(n) + 0.5
+    phi = np.arccos(1 - 2 * i / n)
+    theta = np.pi * (1 + 5**0.5) * i
+    return np.column_stack(
+        [np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)]
+    )
+
+
+def coverage(run_dir: Path, frames_manifest: Path, image_dir: Path) -> dict:
+    """Where the registered cameras sit around the head.
+
+    Head centre and radius R come from the visual hull (``hull_points.ply`` /
+    ``hull_stats.json``) when present, else from the subject sparse points.
+    "Up" is the mean of the cameras' image-up axes. Per camera: distance / R,
+    elevation, azimuth, and the angle between its optical axis and the
+    direction to the head. Direction coverage counts, for 2000 directions
+    around the head, the cameras within 30 degrees of it. Writes
+    ``coverage.json`` and ``coverage.png`` (azimuth vs elevation, colour =
+    frame order).
+
+    Parameters
+    ----------
+    run_dir : Path
+        Pipeline output directory (``sparse/``, optionally the hull files).
+    frames_manifest : Path
+        Frames manifest with ``mask_dir``.
+    image_dir : Path
+        Frames directory the manifest's ``mask_dir`` is relative to.
+
+    Returns
+    -------
+    dict
+        Coverage statistics.
+    """
+    reconstruction, _ = load_best_reconstruction(run_dir / "sparse")
+    images = sorted(
+        (im for im in reconstruction.images.values() if im.has_pose),
+        key=lambda im: im.name,
+    )
+    if (run_dir / "hull_points.ply").exists():
+        hull = np.asarray(
+            o3d.io.read_point_cloud(str(run_dir / "hull_points.ply")).points
+        )
+        centre = hull.mean(axis=0)
+        _, radius = _hull_scene(run_dir)
+        source = "visual_hull"
+    else:
+        subject = subject_point_ids(images, _mask_dir(frames_manifest, image_dir))
+        pts = np.array([reconstruction.points3D[p].xyz for p in subject])
+        centre = np.median(pts, axis=0)
+        radius = float(np.median(np.linalg.norm(pts - centre, axis=1)))
+        source = "sparse_subject_points"
+
+    poses = [im.cam_from_world().matrix() for im in images]
+    centres = np.array([-p[:, :3].T @ p[:, 3] for p in poses])
+    up = -np.mean([p[1, :3] for p in poses], axis=0)
+    up /= np.linalg.norm(up)
+    v = centres - centre
+    dist = np.linalg.norm(v, axis=1)
+    unit = v / dist[:, None]
+    e1 = unit[0] - (unit[0] @ up) * up
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(up, e1)
+    elevation = np.degrees(np.arcsin(np.clip(unit @ up, -1, 1)))
+    azimuth = np.degrees(np.arctan2(unit @ e2, unit @ e1)) % 360
+    optical = np.array([p[2, :3] for p in poses])
+    off_axis = np.degrees(np.arccos(np.clip(np.sum(optical * -unit, 1), -1, 1)))
+    steps = np.degrees(np.arccos(np.clip(np.sum(unit[1:] * unit[:-1], 1), -1, 1)))
+
+    az_sorted = np.sort(azimuth)
+    az_gaps = np.diff(np.concatenate([az_sorted, [az_sorted[0] + 360]]))
+    dirs = _fibonacci_sphere(2000)
+    seen = (dirs @ unit.T > np.cos(np.radians(30))).sum(axis=1)
+    height = dirs @ up
+
+    def _share(sel: np.ndarray, k: int) -> float:
+        return float(np.mean(seen[sel] >= k))
+
+    out = {
+        "run_dir": str(run_dir),
+        "centre_source": source,
+        "head_radius_sfm": radius,
+        "registered_images": len(images),
+        "distance_over_radius": {
+            "min": float(dist.min() / radius),
+            "median": float(np.median(dist) / radius),
+            "max": float(dist.max() / radius),
+        },
+        "elevation_deg": {
+            q: float(np.percentile(elevation, p))
+            for q, p in (("min", 0), ("p10", 10), ("median", 50), ("p90", 90))
+        }
+        | {"max": float(elevation.max())},
+        "views_elevation_over_45deg": int((elevation > 45).sum()),
+        "azimuth_empty_10deg_bins": int(
+            36 - len(np.unique((azimuth // 10).astype(int)))
+        ),
+        "azimuth_largest_gap_deg": float(az_gaps.max()),
+        "consecutive_step_deg": {
+            "median": float(np.median(steps)),
+            "p90": float(np.percentile(steps, 90)),
+            "max": float(steps.max()),
+        },
+        "optical_axis_off_head_deg_median": float(np.median(off_axis)),
+        "directions_seen_by_3plus_views": {
+            "all": _share(np.ones(len(dirs), bool), 3),
+            "upper_hemisphere": _share(height > 0, 3),
+            "top_cap_30deg": _share(height > np.cos(np.radians(30)), 3),
+            "equator_band_30deg": _share(np.abs(height) < np.sin(np.radians(30)), 3),
+        },
+    }
+    canvas = np.full((400, 740, 3), 255, np.uint8)
+    for deg in range(0, 361, 90):
+        cv2.line(canvas, (20 + 2 * deg, 20), (20 + 2 * deg, 380), (220, 220, 220), 1)
+    for deg in (-45, 0, 45, 90):
+        y = 200 - 2 * deg
+        cv2.line(canvas, (20, y), (740, y), (220, 220, 220), 1)
+        cv2.putText(canvas, str(deg), (0, y + 4), 0, 0.35, (0, 0, 0), 1)
+    for k, (az, el) in enumerate(zip(azimuth, elevation)):
+        colour = cv2.applyColorMap(
+            np.uint8([[255 * k / max(len(images) - 1, 1)]]), cv2.COLORMAP_VIRIDIS
+        )[0, 0].tolist()
+        cv2.circle(canvas, (int(20 + 2 * az), int(200 - 2 * el)), 3, colour, -1)
+    cv2.imwrite(str(run_dir / "coverage.png"), canvas)
+    (run_dir / "coverage.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return out
+
+
+def paint_out(
+    frames_manifest: Path, image_dir: Path, out_session: Path, tiles: int = 6
+) -> dict:
+    """New frames session with every marker inpainted (markers-as-texture test).
+
+    Copies the session layout (``filtered/*.jpg``, ``filtered/masks``,
+    ``manifest.json``) to ``out_session``; each frame has its
+    ``_marker_mask`` region filled by ``cv2.inpaint`` (Telea) and is saved as
+    JPEG q95 like the originals. ``marker_detections`` becomes empty for every
+    frame so the pipeline runs markerless. Writes ``paintout_sheet.png``
+    (before/after head crops) and ``paintout.json``.
+
+    Parameters
+    ----------
+    frames_manifest : Path
+        Source manifest with ``marker_detections``.
+    image_dir : Path
+        Source frames directory (``filtered/``).
+    out_session : Path
+        New session directory; must not exist.
+    tiles : int, optional
+        Frames in the sheet.
+
+    Returns
+    -------
+    dict
+        Painted share of the head per frame (median / max).
+    """
+    import shutil
+
+    manifest = json.loads(frames_manifest.read_text())
+    frames = manifest["frames"]
+    detections = manifest.get("marker_detections") or {}
+    mask_dir = image_dir / manifest["mask_dir"]
+    out_images = out_session / "filtered"
+    out_session.mkdir(parents=True)
+    shutil.copytree(mask_dir, out_images / manifest["mask_dir"])
+    picks = set(np.linspace(0, len(frames) - 1, tiles).astype(int).tolist())
+
+    shares, crops = [], []
+    for i, name in enumerate(frames):
+        image = cv2.imread(str(image_dir / name))
+        mask = cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE)
+        head = mask > 0 if mask is not None else np.zeros(image.shape[:2], bool)
+        paint = _marker_mask(image, head, detections.get(name, []))
+        painted = cv2.inpaint(image, paint.astype(np.uint8), 7, cv2.INPAINT_TELEA)
+        cv2.imwrite(str(out_images / name), painted)
+        if head.any():
+            shares.append(float((paint & head).sum() / head.sum()))
+        if i in picks and head.any():
+            ys, xs = np.nonzero(head)
+            box = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
+            pair = np.hstack([image[box], painted[box]])
+            scale = 360 / pair.shape[0]
+            crops.append(cv2.resize(pair, (int(pair.shape[1] * scale), 360)))
+
+    manifest["marker_detections"] = {name: [] for name in frames}
+    manifest["diag_paintout"] = {"source_manifest": str(frames_manifest)}
+    (out_session / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    out = {
+        "frames": len(frames),
+        "painted_share_of_head_median": float(np.median(shares)),
+        "painted_share_of_head_max": float(np.max(shares)),
+    }
+    (out_session / "paintout.json").write_text(json.dumps(out, indent=2))
+    if crops:
+        width = max(c.shape[1] for c in crops)
+        crops = [cv2.copyMakeBorder(c, 0, 0, 0, width - c.shape[1], 0) for c in crops]
+        cv2.imwrite(str(out_session / "paintout_sheet.png"), np.vstack(crops))
+    print(json.dumps(out, indent=2))
+    return out
+
+
 def main() -> None:
     """Parse the subcommand and run it."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -604,8 +1006,26 @@ def main() -> None:
     p.add_argument("--run-dir", type=Path, required=True)
     p = sub.add_parser("hullbandnormals")
     p.add_argument("--run-dir", type=Path, required=True)
+    p = sub.add_parser("imgstats")
+    p.add_argument("--frames-manifest", type=Path, required=True)
+    p.add_argument("--image-dir", type=Path, required=True)
+    p.add_argument("--out-dir", type=Path, required=True)
+    p = sub.add_parser("coverage")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--frames-manifest", type=Path, required=True)
+    p.add_argument("--image-dir", type=Path, required=True)
+    p = sub.add_parser("paintout")
+    p.add_argument("--frames-manifest", type=Path, required=True)
+    p.add_argument("--image-dir", type=Path, required=True)
+    p.add_argument("--out-session", type=Path, required=True)
     args = parser.parse_args()
-    if args.cmd == "hullbandnormals":
+    if args.cmd == "imgstats":
+        image_stats(args.frames_manifest, args.image_dir, args.out_dir)
+    elif args.cmd == "coverage":
+        coverage(args.run_dir, args.frames_manifest, args.image_dir)
+    elif args.cmd == "paintout":
+        paint_out(args.frames_manifest, args.image_dir, args.out_session)
+    elif args.cmd == "hullbandnormals":
         hull_band_normals(args.run_dir)
     elif args.cmd == "hullnoise":
         hull_noise(args.run_dir)
