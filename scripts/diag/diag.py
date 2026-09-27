@@ -352,6 +352,134 @@ def visual_hull(
     return stats
 
 
+def _hull_scene(run_dir: Path) -> tuple[o3d.t.geometry.RaycastingScene, float]:
+    """Raycasting scene of ``hull_mesh.ply`` and the hull's equivalent radius."""
+    mesh = o3d.io.read_triangle_mesh(str(run_dir / "hull_mesh.ply"))
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
+    stats = json.loads((run_dir / "hull_stats.json").read_text())
+    volume = stats["occupied_voxels"] * stats["voxel_size_sfm"] ** 3
+    return scene, float((3 * volume / (4 * np.pi)) ** (1 / 3))
+
+
+def _signed_hull_distance(
+    scene: o3d.t.geometry.RaycastingScene, points: np.ndarray
+) -> np.ndarray:
+    """Distance to the hull surface, negative inside the hull."""
+    query = o3d.core.Tensor(points.astype(np.float32))
+    dist = scene.compute_distance(query).numpy()
+    inside = scene.compute_occupancy(query).numpy() > 0
+    return np.where(inside, -dist, dist)
+
+
+def hull_noise(run_dir: Path) -> dict:
+    """How far single-view depth and fused points sit from the visual hull.
+
+    Distances are divided by the hull's equivalent-sphere radius R so runs in
+    different SfM units compare. Writes ``hull_noise.json``.
+
+    Parameters
+    ----------
+    run_dir : Path
+        Run with ``hull_mesh.ply``, ``hull_stats.json``, ``depthviews/`` and
+        the cropped dense cloud.
+
+    Returns
+    -------
+    dict
+        Per cloud: point count, median / p90 of |d|/R, median signed d/R
+        (negative = inside the hull), share within 2 % and 5 % of R.
+    """
+    scene, radius = _hull_scene(run_dir)
+    clouds = sorted((run_dir / "depthviews").glob("*.ply"))
+    clouds.append(next(run_dir.glob("dense_filtered_cropped*.ply")))
+    out: dict = {"hull_radius_sfm": radius}
+    for path in clouds:
+        pts = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+        if len(pts) == 0:
+            continue
+        d = _signed_hull_distance(scene, pts) / radius
+        a = np.abs(d)
+        out[path.stem] = {
+            "points": len(pts),
+            "median_abs": float(np.median(a)),
+            "p90_abs": float(np.percentile(a, 90)),
+            "median_signed": float(np.median(d)),
+            "within_2pct": float(np.mean(a < 0.02)),
+            "within_5pct": float(np.mean(a < 0.05)),
+        }
+    (run_dir / "hull_noise.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return out
+
+
+def hull_band(run_dir: Path, bands: tuple[float, ...] = (0.02, 0.05)) -> dict:
+    """Hull-guided mesh: fused points near the hull, hull where MVS is empty.
+
+    For each band (fraction of the hull radius R) writes
+    ``hullband_<pct>_mvsonly_mesh.ply`` (band-filtered fused points only) and
+    ``hullband_<pct>_mesh.ply`` (plus hull surface samples with no fused
+    point within the band), both Poisson depth 9, largest component.
+
+    Parameters
+    ----------
+    run_dir : Path
+        Run with ``hull_mesh.ply``, ``hull_stats.json`` and the cropped cloud.
+    bands : tuple[float, ...], optional
+        Band half-widths as fractions of R.
+
+    Returns
+    -------
+    dict
+        Point counts per band.
+    """
+    scene, radius = _hull_scene(run_dir)
+    fused = o3d.io.read_point_cloud(
+        str(next(run_dir.glob("dense_filtered_cropped*.ply")))
+    )
+    pts = np.asarray(fused.points)
+    d = np.abs(_signed_hull_distance(scene, pts))
+    hull = o3d.io.read_triangle_mesh(str(run_dir / "hull_mesh.ply"))
+    hull.compute_vertex_normals()
+    hull_samples = hull.sample_points_uniformly(200_000, use_triangle_normal=True)
+    out: dict = {"hull_radius_sfm": radius, "fused_points": len(pts)}
+    for band in bands:
+        tag = f"{round(band * 100)}pct"
+        near = fused.select_by_index(np.flatnonzero(d < band * radius).tolist())
+        tree = o3d.geometry.KDTreeFlann(near)
+        empty = [
+            i
+            for i, p in enumerate(np.asarray(hull_samples.points))
+            if tree.search_radius_vector_3d(p, band * radius)[0] == 0
+        ]
+        fill = hull_samples.select_by_index(empty)
+        for name, cloud in (("mvsonly", near), ("filled", near + fill)):
+            mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                cloud, depth=9
+            )
+            clusters, counts, _ = mesh.cluster_connected_triangles()
+            mesh.remove_triangles_by_mask(
+                np.asarray(clusters) != int(np.argmax(counts))
+            )
+            mesh.remove_unreferenced_vertices()
+            suffix = "mvsonly_mesh" if name == "mvsonly" else "mesh"
+            o3d.io.write_triangle_mesh(
+                str(run_dir / f"hullband_{tag}_{suffix}.ply"), mesh
+            )
+        o3d.io.write_point_cloud(
+            str(run_dir / f"hullband_{tag}_points.ply"), near + fill
+        )
+        out[tag] = {
+            "fused_points_in_band": len(near.points),
+            "fused_share_in_band": len(near.points) / max(len(pts), 1),
+            "hull_fill_points": len(fill.points),
+            "hull_fill_share_of_surface": len(fill.points) / len(hull_samples.points),
+        }
+    (run_dir / "hull_band.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return out
+
+
 def main() -> None:
     """Parse the subcommand and run it."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -375,8 +503,16 @@ def main() -> None:
     p.add_argument("--frames-manifest", type=Path, required=True)
     p.add_argument("--image-dir", type=Path, required=True)
     p.add_argument("--resolution", type=int, default=200)
+    p = sub.add_parser("hullnoise")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p = sub.add_parser("hullband")
+    p.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args()
-    if args.cmd == "depthviews":
+    if args.cmd == "hullnoise":
+        hull_noise(args.run_dir)
+    elif args.cmd == "hullband":
+        hull_band(args.run_dir)
+    elif args.cmd == "depthviews":
         depth_views(args.run_dir, args.count)
     elif args.cmd == "hull":
         visual_hull(args.run_dir, args.frames_manifest, args.image_dir, args.resolution)
