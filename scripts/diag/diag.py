@@ -10,6 +10,7 @@ Subcommands, all read-only on the run they inspect:
 - ``coverage``: camera viewpoints around the head from the sparse model.
 - ``paintout``: copy of a frames session with the ArUco markers inpainted
   (writes a new session; the input is untouched).
+- ``roughness``: local plane-fit residual of the cropped cloud (no hull).
 
 Usage::
 
@@ -408,6 +409,7 @@ def hull_noise(run_dir: Path) -> dict:
             continue
         d = _signed_hull_distance(scene, pts) / radius
         a = np.abs(d)
+        q25, q75 = np.percentile(d, [25, 75])
         out[path.stem] = {
             "points": len(pts),
             "median_abs": float(np.median(a)),
@@ -415,6 +417,10 @@ def hull_noise(run_dir: Path) -> dict:
             "median_signed": float(np.median(d)),
             "within_2pct": float(np.mean(a < 0.02)),
             "within_5pct": float(np.mean(a < 0.05)),
+            # Spread around the median offset: noise without a loose-mask
+            # (inflated hull) bias.
+            "signed_iqr": float(q75 - q25),
+            "signed_mad": float(np.median(np.abs(d - np.median(d)))),
         }
     (run_dir / "hull_noise.json").write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
@@ -581,6 +587,78 @@ def hull_band_normals(run_dir: Path, band: float = 0.05) -> dict:
     (run_dir / "hull_band_normals.json").write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
     return out
+
+
+def roughness(run_dir: Path, k: int = 30, voxel_frac: float = 0.005) -> dict:
+    """Local surface noise of the cropped dense cloud, no hull involved.
+
+    The cloud is scaled by its own size R (median distance of the points to
+    their median), voxel-downsampled to ``voxel_frac`` * R so runs of any
+    density compare, and for every point the RMS distance of its ``k``
+    nearest neighbours to their best-fit plane is taken (square root of the
+    smallest covariance eigenvalue). A smooth surface gives about the voxel
+    size; a noisy point shell gives more. Writes ``roughness.json``.
+
+    Parameters
+    ----------
+    run_dir : Path
+        Run with the cropped dense cloud.
+    k : int, optional
+        Neighbours per plane fit.
+    voxel_frac : float, optional
+        Voxel size as a fraction of R.
+
+    Returns
+    -------
+    dict
+        Median / p90 residual (fraction of R) and share of points above 1 % R.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = np.asarray(
+        o3d.io.read_point_cloud(
+            str(next(run_dir.glob("dense_filtered_cropped*.ply")))
+        ).points
+    )
+    centre = np.median(pts, axis=0)
+    radius = float(np.median(np.linalg.norm(pts - centre, axis=1)))
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector((pts - centre) / radius)
+    down = np.asarray(pcd.voxel_down_sample(voxel_frac).points)
+    _, idx = cKDTree(down).query(down, k=k, workers=-1)
+    residual = np.empty(len(down))
+    for start in range(0, len(down), 200_000):
+        nb = down[idx[start : start + 200_000]]
+        nb = nb - nb.mean(axis=1, keepdims=True)
+        cov = np.einsum("nki,nkj->nij", nb, nb) / k
+        residual[start : start + 200_000] = np.sqrt(
+            np.maximum(np.linalg.eigvalsh(cov)[:, 0], 0)
+        )
+    out = {
+        "cloud_radius_sfm": radius,
+        "points": len(pts),
+        "points_downsampled": len(down),
+        "voxel_frac": voxel_frac,
+        "k": k,
+        "residual_median": float(np.median(residual)),
+        "residual_p90": float(np.percentile(residual, 90)),
+        "share_over_1pct": float(np.mean(residual > 0.01)),
+    }
+    (run_dir / "roughness.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return out
+
+
+def _detections_by_frame(detections_json: Path) -> dict[str, list]:
+    """``detections.json`` (aruco-detect output) as ``{frame: [{id, corners}]}``."""
+    data = json.loads(detections_json.read_text())
+    return {
+        entry["filename"]: [
+            {"id": i, "corners": c}
+            for i, c in zip(entry["marker_ids"], entry["corners"])
+        ]
+        for entry in data["detections"]
+    }
 
 
 def _marker_mask(
@@ -905,7 +983,11 @@ def coverage(run_dir: Path, frames_manifest: Path, image_dir: Path) -> dict:
 
 
 def paint_out(
-    frames_manifest: Path, image_dir: Path, out_session: Path, tiles: int = 6
+    frames_manifest: Path,
+    image_dir: Path,
+    out_session: Path,
+    detections_json: Path | None = None,
+    tiles: int = 6,
 ) -> dict:
     """New frames session with every marker inpainted (markers-as-texture test).
 
@@ -924,6 +1006,9 @@ def paint_out(
         Source frames directory (``filtered/``).
     out_session : Path
         New session directory; must not exist.
+    detections_json : Path or None, optional
+        ``detections.json`` to take marker corners from instead of the
+        manifest (a session filtered with ``--valid-ids 999`` has none left).
     tiles : int, optional
         Frames in the sheet.
 
@@ -936,7 +1021,11 @@ def paint_out(
 
     manifest = json.loads(frames_manifest.read_text())
     frames = manifest["frames"]
-    detections = manifest.get("marker_detections") or {}
+    detections = (
+        _detections_by_frame(detections_json)
+        if detections_json is not None
+        else manifest.get("marker_detections") or {}
+    )
     mask_dir = image_dir / manifest["mask_dir"]
     out_images = out_session / "filtered"
     out_session.mkdir(parents=True)
@@ -1018,13 +1107,20 @@ def main() -> None:
     p.add_argument("--frames-manifest", type=Path, required=True)
     p.add_argument("--image-dir", type=Path, required=True)
     p.add_argument("--out-session", type=Path, required=True)
+    p.add_argument("--detections", type=Path, default=None)
+    p = sub.add_parser("roughness")
+    p.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.cmd == "imgstats":
         image_stats(args.frames_manifest, args.image_dir, args.out_dir)
     elif args.cmd == "coverage":
         coverage(args.run_dir, args.frames_manifest, args.image_dir)
     elif args.cmd == "paintout":
-        paint_out(args.frames_manifest, args.image_dir, args.out_session)
+        paint_out(
+            args.frames_manifest, args.image_dir, args.out_session, args.detections
+        )
+    elif args.cmd == "roughness":
+        roughness(args.run_dir)
     elif args.cmd == "hullbandnormals":
         hull_band_normals(args.run_dir)
     elif args.cmd == "hullnoise":
