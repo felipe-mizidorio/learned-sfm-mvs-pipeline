@@ -329,7 +329,7 @@ def main() -> None:
             {"colmap": colmap_cfg, "transmvsnet": transmvsnet_cfg},
         )
 
-    # --- Step 3/4: SOR, scale, head crop, membrane filter, Poisson ---
+    # --- Step 3/4: scale, head crop, SOR, membrane filter, Poisson ---
     logger.info("=== Step 3/4: Post-fusion ===")
     try:
         with timer("post_fusion"):

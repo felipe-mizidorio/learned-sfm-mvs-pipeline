@@ -1,10 +1,10 @@
-"""Re-fuse existing depth maps (optionally with bbox or masks), then SOR,
-scale recovery, head crop and Poisson + LCC mesh.
+"""Re-fuse existing depth maps (optionally with bbox or masks), then scale
+recovery, head crop, SOR and Poisson + LCC mesh.
 
 The MVS backend defaults to the one recorded in the previous run's
 pipeline_manifest.json, so its depth maps are the ones re-fused.
 
-Typical usage (no bbox — full fusion, SOR + automatic ArUco-derived head crop):
+Typical usage (no bbox — full fusion, automatic head crop, then SOR):
     uv run sfm-mvs-resume-mvs \\
         --output-dir data/processed/<session> \\
         --image-dir path/to/filtered/frames \\
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Re-fuse depth maps, SOR, crop to head sphere, scale recovery, Poisson + LCC."
+        description="Re-fuse depth maps, scale recovery, head crop, SOR, Poisson + LCC."
     )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--image-dir", required=True, type=Path)
@@ -229,7 +229,7 @@ def main() -> None:
         fusion_mask_stats = fused.stats["fusion_masks"]
         mvs_provenance = {"name": mvs_backend, "fusion": fused.stats["fusion"]}
 
-    # --- Steps 2-6: SOR, scale, head crop, membrane filter, Poisson, scale ---
+    # --- Steps 2-6: scale, head crop, SOR, membrane filter, Poisson, scale ---
     try:
         with timer("post_fusion"):
             post = run_post_fusion(

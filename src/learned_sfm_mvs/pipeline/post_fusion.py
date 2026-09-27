@@ -1,13 +1,16 @@
 """Post-fusion chain shared by sfm-mvs-run and sfm-mvs-resume-mvs.
 
-dense.ply (SfM units) → SOR → scale recovery and checks → scale policy gate
-→ head crop → optional membrane filter → Poisson + LCC → metric scale applied
+dense.ply (SfM units) → scale recovery and checks → scale policy gate → head
+crop → SOR → optional membrane filter → Poisson + LCC → metric scale applied
 once per written file, or ``*.UNSCALED_sfm_units.*`` renaming.
 
 Order matters: scale recovery runs before the crop because the automatic crop
 radius is derived in millimetres; the policy gate runs before the crop and the
-mesh so a failed recovery cannot produce a finished, metric-looking mesh; the
-scale is applied only after meshing so no file is scaled twice.
+mesh so a failed recovery cannot produce a finished, metric-looking mesh; SOR
+runs on the cropped cloud so its neighbour-distance statistics describe the
+head, not the room (on a low-texture head the background dominated them, and
+SOR removed head points the crop would have kept); the scale is applied only
+after meshing so no file is scaled twice.
 """
 
 import logging
@@ -151,11 +154,6 @@ def run_post_fusion(
     """
     mesh_ply = output_dir / "mesh.ply"
 
-    logger.info("=== Point cloud filtering (SOR) ===")
-    dense_filtered_ply, sor_stats = run_sor(
-        dense_ply, output_dir, mesh_cfg["point_cloud_filtering"]
-    )
-
     marker_length_mm = aruco_cfg.get("marker_length_mm")
     scale_factor, marker_points, corners_by_marker = recover_scale_details_safe(
         reconstruction=reconstruction,
@@ -175,21 +173,31 @@ def run_post_fusion(
     enforce_scale_policy(scale_status, allow_unscaled=options.allow_unscaled)
 
     cropped_ply, crop_stats = run_head_crop(
-        dense_filtered_ply,
+        dense_ply,
         output_dir,
         reconstruction,
         scale_factor=scale_factor,
         marker_points=marker_points,
         mask_dir=mask_dir,
         silhouette_cfg=mesh_cfg.get("silhouette_crop"),
+        output_name="dense_cropped.ply",
+    )
+    cropped = cropped_ply != dense_ply
+
+    logger.info("=== Point cloud filtering (SOR) ===")
+    filtered_ply, sor_stats = run_sor(
+        cropped_ply,
+        output_dir,
+        mesh_cfg["point_cloud_filtering"],
+        output_name="dense_filtered_cropped.ply" if cropped else "dense_filtered.ply",
     )
     sor_stats.update(crop_stats)
 
-    input_for_poisson = cropped_ply
+    input_for_poisson = filtered_ply
     membrane_stats: dict | None = None
     if options.membrane_filter:
         input_for_poisson, membrane_stats = run_membrane_filter(
-            cropped_ply,
+            filtered_ply,
             output_dir,
             marker_corners=corners_by_marker,
             pale_threshold=options.membrane_pale_threshold,
@@ -206,9 +214,11 @@ def run_post_fusion(
     )
 
     # Every written cloud exactly once. dict.fromkeys de-duplicates while
-    # preserving order, so a run where the crop or the membrane filter was
-    # skipped does not touch the same file twice.
-    clouds = [dense_filtered_ply, cropped_ply, input_for_poisson]
+    # preserving order, so a run where the membrane filter was skipped does
+    # not touch the same file twice. A skipped crop hands dense.ply back as
+    # cropped_ply; dense.ply itself is touched only when asked.
+    clouds = [cropped_ply, filtered_ply, input_for_poisson]
+    clouds = [c for c in clouds if c != dense_ply]
     if options.scale_dense_ply:
         clouds.insert(0, dense_ply)
     clouds = list(dict.fromkeys(clouds))

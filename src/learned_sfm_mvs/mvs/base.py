@@ -2,7 +2,7 @@
 
 Every backend works in the undistorted COLMAP workspace ``<output>/mvs`` and
 writes ``<output>/dense.ply`` (points, normals, colours). Everything after
-fusion (SOR, scale recovery, head crop, Poisson) only consumes that file.
+fusion (scale recovery, head crop, SOR, Poisson) only consumes that file.
 
 Depth estimation and fusion are separate steps so ``fuse`` can re-run with
 other thresholds, masks or clipping on existing depth maps (resume-mvs).

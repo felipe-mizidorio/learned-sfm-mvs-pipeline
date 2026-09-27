@@ -1,6 +1,7 @@
 """Shared post-processing helpers used by all pipeline entry-point scripts.
 
-Orchestrates SOR → Poisson → LCC → Taubin and writes pipeline_manifest.json.
+Orchestrates head crop → SOR → Poisson → LCC → Taubin and writes
+pipeline_manifest.json.
 Each stage saves its output as a PLY so it can be inspected in a 3D viewer.
 Each script calls these functions after stereo fusion, inserting scale recovery
 in between (which is script-specific).
@@ -190,17 +191,18 @@ def auto_head_radius(
 
 
 def _silhouette_crop(
-    dense_filtered_ply: Path,
+    input_ply: Path,
     output_dir: Path,
     reconstruction: pycolmap.Reconstruction,
     mask_dir: Path,
     cfg: dict,
+    output_name: str,
 ) -> tuple[Path, dict] | None:
     """Markerless crop by silhouette votes; None when it is unusable."""
     logger.info(
         "=== Post-fusion silhouette crop (markerless, masks '%s') ===", mask_dir
     )
-    pcd = o3d.io.read_point_cloud(str(dense_filtered_ply))
+    pcd = o3d.io.read_point_cloud(str(input_ply))
     keep, stats = silhouette_keep(
         np.asarray(pcd.points),
         reconstruction,
@@ -211,7 +213,7 @@ def _silhouette_crop(
     if keep is None or not keep.any():
         return None
     cropped = pcd.select_by_index(np.flatnonzero(keep).tolist())
-    cropped_ply = output_dir / "dense_filtered_cropped.ply"
+    cropped_ply = output_dir / output_name
     o3d.io.write_point_cloud(str(cropped_ply), cropped)
     logger.info(
         "Cropped dense cloud: %d points, saved to '%s'",
@@ -222,15 +224,16 @@ def _silhouette_crop(
 
 
 def run_head_crop(
-    dense_filtered_ply: Path,
+    input_ply: Path,
     output_dir: Path,
     reconstruction: pycolmap.Reconstruction,
     scale_factor: float | None,
     marker_points: np.ndarray | None,
     mask_dir: Path | None = None,
     silhouette_cfg: dict | None = None,
+    output_name: str = "dense_filtered_cropped.ply",
 ) -> tuple[Path, dict]:
-    """Crop the SOR-filtered cloud to the head region; no manual parameters.
+    """Crop a dense cloud to the head region; no manual parameters.
 
     Method: with subject masks from the frames manifest, the silhouette crop
     (see ``postprocess.silhouette_filter``): the masks already say where the
@@ -253,8 +256,8 @@ def run_head_crop(
 
     Parameters
     ----------
-    dense_filtered_ply : Path
-        SOR-filtered dense cloud, in SfM units.
+    input_ply : Path
+        Dense cloud, in SfM units.
     output_dir : Path
         Run output directory; the cropped cloud is written here.
     reconstruction : pycolmap.Reconstruction
@@ -269,18 +272,25 @@ def run_head_crop(
     silhouette_cfg : dict or None, optional
         ``silhouette_crop`` section of ``configs/mesh.yaml``; None disables
         the silhouette crop.
+    output_name : str, optional
+        File name of the cropped cloud in ``output_dir``.
 
     Returns
     -------
-    input_for_poisson : Path
-        The PLY the mesh stage should consume: the cropped file, or
-        ``dense_filtered_ply`` when the crop removes every point.
+    cropped_ply : Path
+        The cropped file, or ``input_ply`` when the crop is skipped or
+        removes every point.
     crop_stats : dict
         Stats for pipeline_manifest.json.
     """
     if mask_dir is not None and silhouette_cfg:
         cropped = _silhouette_crop(
-            dense_filtered_ply, output_dir, reconstruction, mask_dir, silhouette_cfg
+            input_ply,
+            output_dir,
+            reconstruction,
+            mask_dir,
+            silhouette_cfg,
+            output_name,
         )
         if cropped is not None:
             return cropped
@@ -299,7 +309,7 @@ def run_head_crop(
             logger.warning(
                 "Could not estimate head centre from camera poses — skipping head crop."
             )
-            return dense_filtered_ply, {}
+            return input_ply, {}
         center_source = "optical_axis_fallback"
         logger.warning(
             "Only %d triangulated ArUco corner(s) (< %d) — falling back to the "
@@ -326,18 +336,18 @@ def run_head_crop(
         radius,
         radius_source,
     )
-    pcd = o3d.io.read_point_cloud(str(dense_filtered_ply))
-    logger.info("Dense filtered cloud before crop: %d points", len(pcd.points))
+    pcd = o3d.io.read_point_cloud(str(input_ply))
+    logger.info("Dense cloud before crop: %d points", len(pcd.points))
     pcd_crop = crop_to_sphere(pcd, head_center, radius)
 
     if len(pcd_crop.points) == 0:
         logger.warning(
-            "Crop removed all points! Falling back to SOR-filtered dense cloud. "
+            "Crop removed all points! Falling back to the uncropped cloud. "
             "Check camera poses, marker triangulation and the frames-manifest masks."
         )
-        return dense_filtered_ply, {}
+        return input_ply, {}
 
-    cropped_ply = output_dir / "dense_filtered_cropped.ply"
+    cropped_ply = output_dir / output_name
     o3d.io.write_point_cloud(str(cropped_ply), pcd_crop)
     logger.info(
         "Cropped dense cloud: %d points, saved to '%s'",
@@ -364,6 +374,7 @@ def run_sor(
     input_ply: Path,
     output_dir: Path,
     filter_opts: dict,
+    output_name: str = "dense_filtered.ply",
 ) -> tuple[Path, dict]:
     """Run SOR on input_ply, save filtered PLY to output_dir.
 
@@ -372,9 +383,11 @@ def run_sor(
     input_ply : Path
         Dense cloud.
     output_dir : Path
-        Run output directory; ``dense_filtered.ply`` is written here.
+        Run output directory; the filtered cloud is written here.
     filter_opts : dict
         ``point_cloud_filtering`` section of ``configs/mesh.yaml``.
+    output_name : str, optional
+        File name of the filtered cloud in ``output_dir``.
 
     Returns
     -------
@@ -385,7 +398,7 @@ def run_sor(
     """
     pcd_raw = o3d.io.read_point_cloud(str(input_ply))
 
-    dense_filtered_ply = output_dir / "dense_filtered.ply"
+    dense_filtered_ply = output_dir / output_name
     pcd_filtered = filter_point_cloud(
         input_ply,
         dense_filtered_ply,

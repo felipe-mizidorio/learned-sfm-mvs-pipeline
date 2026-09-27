@@ -64,9 +64,11 @@ def _markers() -> tuple[np.ndarray, dict]:
     return points, corners_by_marker
 
 
-def _run(tmp_path, scale, mesh_cfg=MESH_CFG, mask_dir=None, **options):
+def _run(
+    tmp_path, scale, mesh_cfg=MESH_CFG, mask_dir=None, write_dense=None, **options
+):
     dense = tmp_path / "dense.ply"
-    _write_dense(dense)
+    (write_dense or _write_dense)(dense)
     points, corners = _markers()
     recovered = (scale, points, corners) if scale else (None, None, None)
     with patch(
@@ -100,7 +102,7 @@ def test_scaled_run_crops_meshes_and_scales_each_file_once(tmp_path):
     mesh = o3d.io.read_triangle_mesh(str(result.mesh_ply))
     extent = np.ptp(np.asarray(mesh.vertices), axis=0)
     np.testing.assert_allclose(extent, 2 * HEAD_RADIUS * SCALE, rtol=0.1)
-    for name in ["dense_filtered.ply", "dense_filtered_cropped.ply"]:
+    for name in ["dense_cropped.ply", "dense_filtered_cropped.ply"]:
         radius = np.linalg.norm(_points(tmp_path / name), axis=1)
         assert np.median(radius) == pytest.approx(HEAD_RADIUS * SCALE, rel=0.05)
     # The crop removed the background.
@@ -170,3 +172,40 @@ def test_masks_and_silhouette_config_reach_the_head_crop(tmp_path):
     kwargs = mock_crop.call_args.kwargs
     assert kwargs["mask_dir"] == tmp_path / "masks"
     assert kwargs["silhouette_cfg"] == silhouette
+
+
+def test_sor_runs_on_the_cropped_cloud(tmp_path):
+    result = _run(tmp_path, SCALE)
+
+    crop = result.sor_stats["head_crop"]
+    sor = result.sor_stats["point_cloud_filtering"]
+    assert crop["points_before"] == 4400  # the raw cloud, background included
+    assert sor["points_before"] == crop["points_after"]
+    # No full-room SOR cloud once the crop succeeded.
+    assert not (tmp_path / "dense_filtered.ply").exists()
+
+
+def _write_dense_with_packed_background(path) -> None:
+    """Sparse head plus a far, much denser background blob.
+
+    On the whole cloud, the background sets SOR's neighbour-distance
+    statistics and every head point looks like an outlier.
+    """
+    head = _fibonacci_sphere(4000, HEAD_RADIUS)
+    rng = np.random.default_rng(0)
+    background = BACKGROUND_DISTANCE + rng.normal(scale=0.01, size=(40000, 3))
+    cloud = o3d.geometry.PointCloud(
+        o3d.utility.Vector3dVector(np.vstack([head, background]))
+    )
+    normals = np.vstack([head / HEAD_RADIUS, np.tile([0.0, 0, 1], (40000, 1))])
+    cloud.normals = o3d.utility.Vector3dVector(normals)
+    o3d.io.write_point_cloud(str(path), cloud)
+
+
+def test_background_does_not_set_sor_statistics_for_the_head(tmp_path):
+    result = _run(tmp_path, SCALE, write_dense=_write_dense_with_packed_background)
+
+    head = _points(tmp_path / "dense_filtered_cropped.ply")
+    # SOR on the whole cloud would have dropped nearly all 4000 head points.
+    assert len(head) > 0.9 * 4000
+    assert result.sor_stats["point_cloud_filtering"]["points_before"] == 4000
