@@ -480,6 +480,101 @@ def hull_band(run_dir: Path, bands: tuple[float, ...] = (0.02, 0.05)) -> dict:
     return out
 
 
+def hull_band_normals(run_dir: Path, band: float = 0.05) -> dict:
+    """Hull-band mesh with the normals replaced, one variant per normal source.
+
+    Same band and hull fill as ``hull_band``, but hull-fill points are grey
+    (not black) and the fused points' normals come from:
+
+    - ``fused``: fusion's per-pixel depth-gradient normals (unchanged; only
+      the fill colour differs from ``hull_band``);
+    - ``hull``: the normal of the nearest hull-mesh triangle;
+    - ``pca``: PCA over the 60 nearest points, flipped to agree with the
+      nearest hull normal.
+
+    Writes ``hullband2_<pct>_<source>_mesh.ply`` and ``hullband2_<pct>_points.ply``.
+
+    Parameters
+    ----------
+    run_dir : Path
+        Run with ``hull_mesh.ply``, ``hull_stats.json`` and the cropped cloud.
+    band : float, optional
+        Band half-width as a fraction of the hull radius.
+
+    Returns
+    -------
+    dict
+        Point counts.
+    """
+    scene, radius = _hull_scene(run_dir)
+    fused = o3d.io.read_point_cloud(
+        str(next(run_dir.glob("dense_filtered_cropped*.ply")))
+    )
+    d = np.abs(_signed_hull_distance(scene, np.asarray(fused.points)))
+    near = fused.select_by_index(np.flatnonzero(d < band * radius).tolist())
+    hull = o3d.io.read_triangle_mesh(str(run_dir / "hull_mesh.ply"))
+    hull.compute_vertex_normals()
+    samples = hull.sample_points_uniformly(200_000, use_triangle_normal=True)
+    tree = o3d.geometry.KDTreeFlann(near)
+    empty = [
+        i
+        for i, p in enumerate(np.asarray(samples.points))
+        if tree.search_radius_vector_3d(p, band * radius)[0] == 0
+    ]
+    fill = samples.select_by_index(empty)
+    fill.paint_uniform_color([0.6, 0.6, 0.6])
+
+    query = o3d.core.Tensor(np.asarray(near.points, dtype=np.float32))
+    hull_normals = scene.compute_closest_points(query)["primitive_normals"].numpy()
+    pca = o3d.geometry.PointCloud(near)
+    pca.estimate_normals(o3d.geometry.KDTreeSearchParamKNN(60))
+    pca_normals = np.asarray(pca.normals)
+    flip = np.sum(pca_normals * hull_normals, axis=1) < 0
+    pca_normals[flip] *= -1
+
+    tag = f"{round(band * 100)}pct"
+    for source, normals in (
+        ("fused", np.asarray(near.normals)),
+        ("hull", hull_normals.astype(np.float64)),
+        ("pca", pca_normals),
+    ):
+        cloud = o3d.geometry.PointCloud(near)
+        cloud.normals = o3d.utility.Vector3dVector(normals)
+        cloud += fill
+        mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            cloud, depth=9
+        )
+        clusters, counts, _ = mesh.cluster_connected_triangles()
+        mesh.remove_triangles_by_mask(np.asarray(clusters) != int(np.argmax(counts)))
+        mesh.remove_unreferenced_vertices()
+        o3d.io.write_triangle_mesh(
+            str(run_dir / f"hullband2_{tag}_{source}_mesh.ply"), mesh
+        )
+    o3d.io.write_point_cloud(str(run_dir / f"hullband2_{tag}_points.ply"), near + fill)
+    out = {
+        "band": band,
+        "fused_points_in_band": len(near.points),
+        "hull_fill_points": len(fill.points),
+        "pca_normals_flipped": int(flip.sum()),
+        "fused_vs_hull_normal_median_angle_deg": float(
+            np.degrees(
+                np.median(
+                    np.arccos(
+                        np.clip(
+                            np.abs(np.sum(np.asarray(near.normals) * hull_normals, 1)),
+                            0,
+                            1,
+                        )
+                    )
+                )
+            )
+        ),
+    }
+    (run_dir / "hull_band_normals.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return out
+
+
 def main() -> None:
     """Parse the subcommand and run it."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -507,8 +602,12 @@ def main() -> None:
     p.add_argument("--run-dir", type=Path, required=True)
     p = sub.add_parser("hullband")
     p.add_argument("--run-dir", type=Path, required=True)
+    p = sub.add_parser("hullbandnormals")
+    p.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args()
-    if args.cmd == "hullnoise":
+    if args.cmd == "hullbandnormals":
+        hull_band_normals(args.run_dir)
+    elif args.cmd == "hullnoise":
         hull_noise(args.run_dir)
     elif args.cmd == "hullband":
         hull_band(args.run_dir)
