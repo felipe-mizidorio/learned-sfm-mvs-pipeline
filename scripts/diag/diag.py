@@ -870,7 +870,7 @@ def coverage(run_dir: Path, frames_manifest: Path, image_dir: Path) -> dict:
         | {"max": float(elevation.max())},
         "views_elevation_over_45deg": int((elevation > 45).sum()),
         "azimuth_empty_10deg_bins": int(
-            36 - len(np.unique((azimuth // 10).astype(int)))
+            36 - len(np.unique((azimuth // 10).astype(int) % 36))
         ),
         "azimuth_largest_gap_deg": float(az_gaps.max()),
         "consecutive_step_deg": {
