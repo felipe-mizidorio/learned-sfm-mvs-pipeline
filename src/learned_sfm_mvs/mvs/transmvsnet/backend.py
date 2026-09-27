@@ -5,6 +5,7 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pycolmap
 import torch
 
@@ -36,7 +37,8 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
     """Undistort, prepare views and run TransMVSNet on every view.
 
     With subject masks (``inputs.mask_dir``), they are warped into the
-    workspace first so each view's depth range covers the subject only (see
+    workspace first so each view's depth range covers the subject only and
+    its source views are ranked on subject points (see
     ``views.build_views``), whether or not fusion masks are requested.
 
     Parameters
@@ -49,8 +51,10 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
     Returns
     -------
     dict
-        Inference stats (checkpoint digest, input size, counts, timing) and
-        ``depth_range_sources``, the number of views per depth-range source.
+        Inference stats (checkpoint digest, input size, counts, timing),
+        ``depth_range_sources`` (views per depth-range source) and, with
+        masks, ``subject_source_views`` (median subject-ranked source views
+        per view, and views with none).
 
     Raises
     ------
@@ -82,6 +86,12 @@ def estimate_depths(inputs: MvsInputs, configs: dict) -> dict:
         shutil.rmtree(out)
     stats = run_inference(inputs.mvs_dir, views, cfg, out, select_device(inputs))
     stats["depth_range_sources"] = dict(Counter(v.depth_range_source for v in views))
+    if view_mask_dir is not None:
+        subject_src = [v.num_subject_src for v in views]
+        stats["subject_source_views"] = {
+            "median_per_view": float(np.median(subject_src)),
+            "views_without": int(sum(n == 0 for n in subject_src)),
+        }
     return stats
 
 

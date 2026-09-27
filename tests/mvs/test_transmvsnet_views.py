@@ -8,6 +8,7 @@ import pytest
 from learned_sfm_mvs.mvs.transmvsnet.views import (
     build_views,
     depth_range,
+    merge_source_views,
     top_source_views,
     view_selection_scores,
 )
@@ -271,3 +272,65 @@ def test_full_frame_or_missing_masks_keep_all_point_ranges(tmp_path):
         (e.depth_min, e.depth_max) for e in expected
     ]
     assert {v.depth_range_source for v in views} == {"all_points"}
+
+
+# --- source views ranked on subject points ---
+
+
+def test_merge_source_views_primary_first_padded_and_capped():
+    primary = [[3, 1], [], [0, 1, 2, 3]]
+    fallback = [[1, 2, 0], [0, 2], [3, 4]]
+    assert merge_source_views(primary, fallback, 3) == [
+        [3, 1, 2],  # padded, duplicate 1 skipped
+        [0, 2],  # no subject ranking: all-points sources unchanged
+        [0, 1, 2],  # capped
+    ]
+
+
+def _subject_sharing(reconstruction, image_id, src_ids, subject):
+    mine = {p.point3D_id for p in _observed(reconstruction.images[image_id], subject)}
+    return [
+        s
+        for s in src_ids
+        if mine & {p.point3D_id for p in _observed(reconstruction.images[s], subject)}
+    ]
+
+
+def test_masks_rank_subject_sharing_source_views_first(tmp_path):
+    reconstruction, subject, mask_dir = _subject_scene(tmp_path)
+    unmasked = {v.image_id: v for v in build_views(reconstruction, CFG)}
+
+    views = build_views(reconstruction, CFG, mask_dir=mask_dir)
+
+    ranked = 0
+    for view in views:
+        before = unmasked[view.image_id]
+        # Never fewer source views than without masks.
+        assert len(view.src_ids) >= len(before.src_ids)
+        head = view.src_ids[: view.num_subject_src]
+        assert _subject_sharing(reconstruction, view.image_id, head, subject) == list(
+            head
+        )
+        assert len(
+            _subject_sharing(reconstruction, view.image_id, view.src_ids, subject)
+        ) >= len(
+            _subject_sharing(reconstruction, view.image_id, before.src_ids, subject)
+        )
+        ranked += view.num_subject_src > 0
+    assert ranked >= 2
+
+
+def test_without_usable_masks_source_views_are_unchanged(tmp_path):
+    reconstruction = _synthetic()
+    mask_dir = tmp_path / "view_masks"
+    mask_dir.mkdir()
+    for image in reconstruction.images.values():  # segmentation fallbacks only
+        cv2.imwrite(
+            str(mask_dir / f"{image.name}.png"), np.full((480, 640), 255, np.uint8)
+        )
+
+    expected = build_views(reconstruction, CFG)
+    views = build_views(reconstruction, CFG, mask_dir=mask_dir)
+
+    assert [v.src_ids for v in views] == [e.src_ids for e in expected]
+    assert {v.num_subject_src for v in views} == {0}

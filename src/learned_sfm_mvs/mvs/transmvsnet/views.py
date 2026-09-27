@@ -13,6 +13,13 @@ Depth ranges: with subject masks, each view searches depth only around the
 subject's sparse points. Without them, a range spanning the background (e.g.
 SfM run on whole frames with ``--no-feature-masks``) spreads the fixed number
 of depth hypotheses over the room, leaving few on the subject.
+
+Source views: with subject masks, they are ranked on the subject's sparse
+points first. Scored on every point, a low-texture subject filmed in a
+textured room gets the views that best triangulate the room: on a plain white
+head, half the chosen pairs shared no subject point at all. Slots the subject
+ranking cannot fill are padded from the all-points ranking, so no view gets
+fewer source views than without masks.
 """
 
 import logging
@@ -55,6 +62,9 @@ class View:
         Points the range came from: ``subject_observed`` (subject points
         this view observes), ``subject_projected`` (all subject points that
         project into its mask) or ``all_points`` (every observed point).
+    num_subject_src : int, optional
+        How many of ``src_ids`` (the first ones) were ranked on subject
+        points; the rest come from the all-points ranking.
     """
 
     image_id: int
@@ -67,6 +77,7 @@ class View:
     depth_max: float
     src_ids: tuple[int, ...]
     depth_range_source: str = "all_points"
+    num_subject_src: int = 0
 
 
 def view_selection_scores(
@@ -137,6 +148,33 @@ def top_source_views(scores: np.ndarray, num_src: int) -> list[list[int]]:
         order = np.argsort(-row, kind="stable")[:num_src]
         selected.append([int(j) for j in order if row[j] > 0])
     return selected
+
+
+def merge_source_views(
+    primary: list[list[int]], fallback: list[list[int]], num_src: int
+) -> list[list[int]]:
+    """Per view, ``primary`` sources first, then unused ``fallback`` ones.
+
+    Parameters
+    ----------
+    primary : list[list[int]]
+        Preferred source-view indices per view, best first.
+    fallback : list[list[int]]
+        Sources that fill the remaining slots, best first.
+    num_src : int
+        Maximum source views per view.
+
+    Returns
+    -------
+    list[list[int]]
+        Merged source-view indices per view, at most ``num_src`` each.
+    """
+    merged = []
+    for first, rest in zip(primary, fallback):
+        chosen = list(first[:num_src])
+        chosen += [j for j in rest if j not in chosen][: num_src - len(chosen)]
+        merged.append(chosen)
+    return merged
 
 
 def depth_range(
@@ -263,8 +301,9 @@ def build_views(
         view's depth range comes from the subject's sparse points: those it
         observes if at least ``min_points``, else all subject points that
         project into its mask, else (no usable mask or too few subject
-        points) every point it observes, as without masks. Source-view
-        selection always uses all points.
+        points) every point it observes, as without masks. Source views are
+        ranked on subject points first and padded from the all-points
+        ranking (see ``merge_source_views``).
 
     Returns
     -------
@@ -301,16 +340,6 @@ def build_views(
         for p in point_ids
     ]
 
-    scores = view_selection_scores(
-        centers, points, tracks, cfg["theta0"], cfg["sigma1"], cfg["sigma2"]
-    )
-    sources = top_source_views(scores, int(cfg["num_src"]))
-
-    observed: list[list[int]] = [[] for _ in images]
-    for point_idx, track in enumerate(tracks):
-        for view_idx in np.unique(track):
-            observed[view_idx].append(point_idx)
-
     is_subject = None
     if mask_dir is not None:
         subject_ids = subject_point_ids(images, mask_dir)
@@ -320,6 +349,31 @@ def build_views(
             int(is_subject.sum()),
             len(point_ids),
         )
+
+    angles = (cfg["theta0"], cfg["sigma1"], cfg["sigma2"])
+    num_src = int(cfg["num_src"])
+    sources = top_source_views(
+        view_selection_scores(centers, points, tracks, *angles), num_src
+    )
+    subject_sources: list[list[int]] = [[] for _ in images]
+    if is_subject is not None and is_subject.any():
+        subject_idx = np.flatnonzero(is_subject)
+        subject_sources = top_source_views(
+            view_selection_scores(
+                centers,
+                points[subject_idx],
+                [tracks[k] for k in subject_idx],
+                *angles,
+            ),
+            num_src,
+        )
+        sources = merge_source_views(subject_sources, sources, num_src)
+
+    observed: list[list[int]] = [[] for _ in images]
+    for point_idx, track in enumerate(tracks):
+        for view_idx in np.unique(track):
+            observed[view_idx].append(point_idx)
+
     min_points = int(cfg["min_points"])
 
     views = []
@@ -373,21 +427,31 @@ def build_views(
                 depth_max=depth_max,
                 src_ids=tuple(images[j].image_id for j in sources[i]),
                 depth_range_source=source,
+                num_subject_src=len(subject_sources[i]),
             )
         )
 
     # Dropped views cannot serve as sources either.
     kept = {v.image_id for v in views}
     views = [
-        View(**{**v.__dict__, "src_ids": tuple(s for s in v.src_ids if s in kept)})
+        View(
+            **{
+                **v.__dict__,
+                "src_ids": tuple(s for s in v.src_ids if s in kept),
+                "num_subject_src": sum(
+                    s in kept for s in v.src_ids[: v.num_subject_src]
+                ),
+            }
+        )
         for v in views
     ]
     logger.info(
-        "TransMVSNet views: %d of %d registered images, median %d source views; "
-        "depth ranges from %s",
+        "TransMVSNet views: %d of %d registered images, median %d source views "
+        "(%d ranked on subject points); depth ranges from %s",
         len(views),
         len(images),
         int(np.median([len(v.src_ids) for v in views])) if views else 0,
+        int(np.median([v.num_subject_src for v in views])) if views else 0,
         dict(Counter(v.depth_range_source for v in views)),
     )
     return views
