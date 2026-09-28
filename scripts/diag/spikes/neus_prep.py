@@ -13,9 +13,10 @@ Writes ``image/NNN.png``, ``mask/NNN.png`` and ``cameras_sphere.npz``
 (``world_mat_i`` = K [R|t], ``scale_mat_i`` = the sphere around the visual
 hull, radius ``--sphere-scale`` * the 99.5th percentile hull radius).
 
-``collect``: copies a NeuS world-space mesh into a diag directory together
-with the run's hull files and ``--points`` uniform surface samples written as
-``dense_filtered_cropped.neus.ply``, so ``diag.py hullnoise`` / ``roughness``
+``collect``: copies a world-space mesh (NeuS, or any other method's, for a
+like-for-like mesh comparison) into a diag directory together with the run's
+hull files and ``--points`` uniform surface samples written as
+``dense_filtered_cropped.<tag>.ply``, so ``diag.py hullnoise`` / ``roughness``
 run on it.
 
 Usage::
@@ -154,7 +155,9 @@ def prep(
     return meta
 
 
-def collect(run_dir: Path, mesh_path: Path, out_dir: Path, points: int) -> dict:
+def collect(
+    run_dir: Path, mesh_path: Path, out_dir: Path, points: int, tag: str = "neus"
+) -> dict:
     """Mesh + surface samples + hull files into a diag directory.
 
     Parameters
@@ -167,6 +170,8 @@ def collect(run_dir: Path, mesh_path: Path, out_dir: Path, points: int) -> dict:
         Diag directory to create.
     points : int
         Uniform surface samples.
+    tag : str, optional
+        Method name used in the output file names.
 
     Returns
     -------
@@ -179,9 +184,9 @@ def collect(run_dir: Path, mesh_path: Path, out_dir: Path, points: int) -> dict:
     mesh.remove_triangles_by_mask(np.asarray(clusters) != int(np.argmax(counts)))
     mesh.remove_unreferenced_vertices()
     mesh.compute_vertex_normals()
-    o3d.io.write_triangle_mesh(str(out_dir / "mesh.neus.ply"), mesh)
+    o3d.io.write_triangle_mesh(str(out_dir / f"mesh.{tag}.ply"), mesh)
     o3d.io.write_point_cloud(
-        str(out_dir / "dense_filtered_cropped.neus.ply"),
+        str(out_dir / f"dense_filtered_cropped.{tag}.ply"),
         mesh.sample_points_uniformly(points),
     )
     for name in ("hull_mesh.ply", "hull_stats.json"):
@@ -192,7 +197,7 @@ def collect(run_dir: Path, mesh_path: Path, out_dir: Path, points: int) -> dict:
         "area_sfm2": float(mesh.get_surface_area()),
         "components_dropped": int(len(counts) - 1),
     }
-    (out_dir / "neus_mesh.json").write_text(json.dumps(out, indent=2))
+    (out_dir / f"{tag}_mesh.json").write_text(json.dumps(out, indent=2))
     print(out)
     return out
 
@@ -212,13 +217,14 @@ def main() -> None:
     p.add_argument("--mesh", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--points", type=int, default=1_000_000)
+    p.add_argument("--tag", default="neus")
     args = parser.parse_args()
     if args.cmd == "prep":
         prep(
             args.run_dir, args.frames_manifest, args.image_dir, args.case_dir, args.size
         )
     else:
-        collect(args.run_dir, args.mesh, args.out_dir, args.points)
+        collect(args.run_dir, args.mesh, args.out_dir, args.points, args.tag)
 
 
 if __name__ == "__main__":
