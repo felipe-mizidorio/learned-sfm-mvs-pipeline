@@ -4,15 +4,15 @@ The white and black captures are the same 3D-printed head, each in its own
 arbitrary SfM frame and scale. This aligns a white mesh (``--source``) to the
 black reference mesh (``--target``, B2 MVS: textured, good) with a similarity
 ICP and reports how far the white surface lies from the black one, as a
-fraction of the head radius. No ground truth STL exists, so the black MVS
+fraction of the head radius R (horizontal radius at 30 % of the source height). No ground truth STL exists, so the black MVS
 mesh stands in for it; its own error (~0.7 % R vs the hull) bounds what the
 number can resolve.
 
 Initialisation: both meshes are rotated so their camera "up" (mean image-up
 axis of the run's cameras) is +z and translated so the head apex (highest
 point) is at the origin; then ICP with scaling is run from a grid of scales
-and azimuths and the best (lowest RMSE among fits covering >= 60 % of the
-source) is kept. Only the source's top ``--head-fraction`` of its height is
+and azimuths and the best is kept: lowest inlier RMSE at a 6 % R tolerance
+among fits with >= 60 % of the source inside it. Only the source's top ``--head-fraction`` of its height is
 used (drops the neck cut / skirt).
 
 Writes ``--out-dir/cross_<name>.json`` and ``aligned_<name>.ply`` (source mesh
@@ -149,13 +149,17 @@ def run(
                     o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=60),
                 )
                 init = reg.transformation
-            if reg.fitness >= 0.6 and (
-                best is None or reg.inlier_rmse < best[1].inlier_rmse
-            ):
-                best, scale0 = (az, reg), scale
+            # Judge every start at one tolerance (6 % R) so noisy meshes compare too.
+            fit_scale = float(np.cbrt(np.linalg.det(reg.transformation[:3, :3])))
+            ev = o3d.pipelines.registration.evaluate_registration(
+                src, tgt, 0.06 * fit_scale * r_src, reg.transformation
+            )
+            rmse = ev.inlier_rmse / fit_scale
+            if ev.fitness >= 0.6 and (best is None or rmse < best[2]):
+                best, scale0 = (az, reg, rmse), scale
     if best is None:
         raise RuntimeError("no alignment covered 60 % of the source")
-    az, reg = best
+    az, reg, _ = best
     T = reg.transformation
     scale = float(np.cbrt(np.linalg.det(T[:3, :3])))
 
