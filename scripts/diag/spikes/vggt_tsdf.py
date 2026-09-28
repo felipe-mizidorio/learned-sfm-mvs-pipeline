@@ -1,8 +1,8 @@
 """Phase 2 spike S3: VGGT depth + masked TSDF fusion (diag/markerless only).
 
 Learned feed-forward multi-view depth for textureless subjects. Runs in its own
-venv (``~/diag2/envs/vggt``: torch cu128, facebookresearch/vggt, open3d,
-pycolmap), not in the pipeline image. VGGT-1B weights are research-only.
+venv (``~/diag2/envs/vggt``: torch cu128, facebookresearch/vggt,
+open3d==0.19.0 -- 0.20.0's legacy TSDF returns empty volumes -- pycolmap), not in the pipeline image. VGGT-1B weights are research-only.
 
 Steps:
 
@@ -15,8 +15,8 @@ Steps:
    centres gives the scale that puts VGGT depth in SfM units.
 5. TSDF fusion (voxel = hull radius / ``--voxels-per-radius``) of the masked,
    confidence-filtered depth, twice: with the SfM poses and intrinsics
-   (``ourposes``) and with VGGT's own cameras mapped into the SfM frame
-   (``vggtposes``). Mesh = marching cubes, largest component.
+   (``sfm_poses``) and with VGGT's own cameras mapped into the SfM frame
+   (``vggt_poses``). Mesh = marching cubes, largest component.
 
 Writes ``--out-dir/vggt_meta.json`` and, per pose set, ``--out-dir/<poses>/``
 with ``mesh.vggt.ply``, ``dense_filtered_cropped.vggt.ply`` (back-projected
@@ -263,7 +263,8 @@ def run(
         "peak_vram_gb": peak_gb,
     }
     for key in ("ours", "vggt"):
-        sub = out_dir / f"{key}poses"
+        name = {"ours": "sfm_poses", "vggt": "vggt_poses"}[key]
+        sub = out_dir / name
         sub.mkdir(exist_ok=True)
         mesh, pts = _fuse(views, voxel, 5 * voxel, key)
         mesh.compute_vertex_normals()
@@ -274,7 +275,7 @@ def run(
         o3d.io.write_point_cloud(str(sub / "dense_filtered_cropped.vggt.ply"), pcd)
         for name in ("hull_mesh.ply", "hull_stats.json"):
             shutil.copy2(run_dir / name, sub / name)
-        meta[f"{key}poses"] = {
+        meta[name] = {
             "mesh_triangles": len(mesh.triangles),
             "mesh_area_sfm2": float(mesh.get_surface_area()),
             "points": len(pts),
