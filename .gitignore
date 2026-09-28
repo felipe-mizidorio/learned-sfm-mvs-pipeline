@@ -227,3 +227,4 @@ models/*
 # and the non-root container user cannot write to it.
 cache/*
 !cache/.gitkeep
+graphify-out/
